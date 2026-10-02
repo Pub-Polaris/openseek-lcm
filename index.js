@@ -37,6 +37,7 @@
 
 import { resolveConfig, resolveHomeDir } from './lib/config.js';
 import { buildLcmCommand } from './lib/commands.js';
+import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
 import { buildTools } from './lib/tools.js';
@@ -68,6 +69,48 @@ function safeRead(read) {
 }
 
 /**
+ * Build the hook-failure recorder for one activation.
+ *
+ * This is called from `catch` blocks, so it must never become the failure: a
+ * logger that throws -- or a store whose counters object is missing -- would
+ * otherwise propagate out of the catch and take down the turn the catch exists
+ * to protect. Every statement therefore sits inside its own guard, including
+ * deriving the message, because the caller's error value is untrusted.
+ *
+ * Exported so the guard can be exercised against a deliberately hostile logger
+ * without having to break an archive to reach it.
+ *
+ * @param {object} options
+ * @param {() => object} options.getLogger returns the logger to report through
+ * @param {() => object} options.getStore returns the store whose counter to bump
+ * @param {Array<object>} options.failures bounded failure buffer
+ * @returns {(operation: string, error: unknown) => void}
+ */
+export function makeNoteFailure({ getLogger, getStore, failures }) {
+  return function noteFailure(operation, error) {
+    let message;
+    try {
+      message = error?.message ?? String(error);
+      failures.push({ operation, message, at: Date.now() });
+      if (failures.length > 20) failures.splice(0, failures.length - 20);
+    } catch {
+      // A missing failure buffer, or an error whose string form throws, must
+      // not stop the report.
+    }
+    try {
+      getStore().counters.captureFailures += 1;
+    } catch {
+      // A missing counter object must not stop the report.
+    }
+    try {
+      getLogger().warn?.(`[lcm] ${operation} failed; continuing${message ? `: ${message}` : ''}`);
+    } catch {
+      // A throwing logger is the exact case this guard exists for.
+    }
+  };
+}
+
+/**
  * Register the LCM plugin.
  *
  * @param {any} ctx Cordis context
@@ -90,17 +133,20 @@ export function apply(ctx, config) {
   /** Sessions whose live events are buffered but not yet archived. */
   const pending = new Map();
   let flushTimer;
-  /** Last `compacted_at` value for which a resume note was already delivered. */
-  const resumeDelivered = new Map();
   /** Hook failures, surfaced by lcm_status through the store counters. */
   const failures = [];
 
-  const noteFailure = (operation, error) => {
-    failures.push({ operation, message: error?.message ?? String(error), at: Date.now() });
-    if (failures.length > 20) failures.splice(0, failures.length - 20);
-    store.counters.captureFailures += 1;
-    logger.warn?.(`[lcm] ${operation} failed; continuing: ${error?.message ?? error}`);
-  };
+  /**
+   * Record a hook failure without ever becoming the failure.
+   *
+   * See `makeNoteFailure`: the guards live there so they can be tested directly
+   * rather than only through a real archive failure.
+   */
+  const noteFailure = makeNoteFailure({
+    getLogger: () => deriveLogger(ctx),
+    getStore: () => store,
+    failures,
+  });
 
   const scheduleFlush = () => {
     if (flushTimer) return;
@@ -194,6 +240,32 @@ export function apply(ctx, config) {
 
   const onFailure = (operation) => (error) => noteFailure(operation, error);
 
+  /**
+   * The messages currently in this session's model surface.
+   *
+   * `agent/pre-step`'s payload `messages` is only the newly claimed batch, so it
+   * cannot answer "is this already in the prompt?". `readSurface` folds the
+   * committed session log, which can: the surface events are exactly the five
+   * message-producing types `messageOfEvent` understands.
+   *
+   * A read failure returns `[]` rather than `undefined` so the caller always has
+   * a concrete exclusion set; recall then simply degrades to the fresh tail.
+   *
+   * @param {string} sessionId
+   * @returns {Promise<Array<object>>} surface messages, oldest first
+   */
+  async function readSurfaceMessages(sessionId) {
+    try {
+      const surface = await ctx.sessionQuery.readSurface(sessionId);
+      return (Array.isArray(surface?.events) ? surface.events : [])
+        .map((event) => messageOfEvent(event))
+        .filter((message) => message && typeof message === 'object');
+    } catch (error) {
+      logger.debug?.(`[lcm] could not read the surface of ${sessionId}: ${error?.message ?? error}`);
+      return [];
+    }
+  }
+
   // Built once on the synchronous path; the same definitions back both the
   // system hint (names only) and the tool registration.
   const toolDefinitions = storeError ? [] : buildTools({ store, ensureCaptured, config: resolved });
@@ -247,66 +319,82 @@ export function apply(ctx, config) {
     );
   }
 
-  if (!storeError && resolved.automaticRetrieval.enabled) {
-    ctx.effect(
-      () =>
-        ctx.on(
-          'agent/pre-step',
-          async (payload, next) => {
-            // A listener that does not own the decision must always call next().
-            const decision = await next();
+  // Registered even when similarity retrieval is off: the deterministic
+  // compaction pointer and the resume note ride this same listener and must not
+  // depend on `automaticRetrieval.enabled`.
+  if (!storeError) {
+    // A real `function`, not an arrow: `resolveStepAgent` reads the dispatching
+    // scope from `this`, and an arrow listener would silently bind `this` to
+    // `apply()`'s context instead, leaving that source permanently dead.
+    const onPreStep = async function onPreStep(payload, next) {
+      const scope = this;
+      // A listener that does not own the decision must always call next(). The
+      // call sits outside the try: an error `next()` raises belongs to the
+      // dispatcher and must not install a plugin-made decision.
+      const decision = await next();
+      try {
+        if (decision?.kind !== 'enter') return decision;
+
+        const agent = resolveStepAgent(payload, scope, ctx);
+        const sessionId = agent?.session?.id;
+        if (typeof sessionId !== 'string' || !sessionId) return decision;
+
+        const messages = Array.isArray(decision.messages) ? decision.messages : [];
+
+        // A continuation step claims no new prompt, so there is nothing to
+        // recall against; skip the work entirely.
+        const hasUserInput = messages.some(
+          (message) => message?.role === 'user' && !isInjectedMessage(message),
+        );
+        if (!hasUserInput) return decision;
+
+        // Archive this session's own log first, so its newest turns are
+        // recallable rather than merely present.
+        await ensureCaptured(sessionId);
+
+        // The model surface, not `payload.messages`: the payload carries only the
+        // newly claimed batch, so it cannot say what the model already sees.
+        const surfaceMessages = await readSurfaceMessages(sessionId);
+
+        const plan = planRecall({
+          store,
+          config: resolved,
+          sessionId,
+          messages,
+          surfaceMessages,
+        });
+        if (!plan) return decision;
+
+        // The resume note is persisted here, but delivery is *not* marked here:
+        // the message carrying it is only durable once the Harness commits this
+        // step. A rejected or aborted step must therefore leave the note
+        // deliverable, so the only proof of delivery is the committed recall
+        // message itself (see `deliveredCompactionFrom`), read back from the
+        // surface on the next step. Any in-memory marker would consume the note
+        // on a step that never reached the log.
+        if (plan.consumedResumeAt > 0) {
+          const note = store.deriveResumeNote(sessionId);
+          if (note) {
             try {
-              if (decision?.kind !== 'enter') return decision;
-
-              const agent = resolveStepAgent(payload, this, ctx);
-              const sessionId = agent?.session?.id;
-              if (typeof sessionId !== 'string' || !sessionId) return decision;
-
-              const messages = Array.isArray(decision.messages) ? decision.messages : [];
-
-              // A continuation step claims no new prompt, so there is nothing to
-              // recall against; skip the work entirely.
-              const hasUserInput = messages.some(
-                (message) => message?.role === 'user' && !isInjectedMessage(message),
-              );
-              if (!hasUserInput) return decision;
-
-              // Archive this session's own log first, so its newest turns are
-              // recallable rather than merely present.
-              await ensureCaptured(sessionId);
-
-              const plan = planRecall({
-                store,
-                config: resolved,
-                sessionId,
-                messages,
-                resumeDelivered,
-              });
-              if (!plan) return decision;
-
-              if (plan.consumedResumeAt > 0) {
-                resumeDelivered.set(sessionId, plan.consumedResumeAt);
-                const note = store.deriveResumeNote(sessionId);
-                if (note) {
-                  try {
-                    store.setResume(sessionId, note);
-                  } catch (error) {
-                    noteFailure('persist resume note', error);
-                  }
-                }
-              }
-
-              // Spread the decision so fields such as the request-series marker
-              // survive; append rather than replace so the default decision's
-              // runtime-context message is preserved.
-              return { ...decision, messages: [...messages, plan.message] };
+              store.setResume(sessionId, note);
             } catch (error) {
-              noteFailure('automatic retrieval', error);
-              return decision;
+              noteFailure('persist resume note', error);
             }
-          },
-          { global: true },
-        ),
+          }
+        }
+
+        // Spread the decision so fields such as the request-series marker
+        // survive; append rather than replace so the default decision's
+        // runtime-context message is preserved.
+        return { ...decision, messages: [...messages, plan.message] };
+      } catch (error) {
+        noteFailure('automatic retrieval', error);
+        return decision;
+      }
+    };
+
+    ctx.effect(
+      () => ctx.on('agent/pre-step', onPreStep, { global: true }),
       'lcm automatic retrieval',
     );
   }
@@ -407,7 +495,7 @@ function renderSystemHint(config, toolNames) {
     '',
     `When the automatic recall is not enough, search the archive yourself with the \`lcm_*\` tools: ${usable.join(', ')}.`,
     '',
-    `Search defaults to scope=${scopes.grep}, describe to scope=${scopes.describe}. Scopes are session (this session), root (the whole branch tree), worktree (every session in this working directory) and all. `,
+    `Search defaults to scope=${scopes.grep}, describe to scope=${scopes.describe}. Scopes are session (this session), root (the whole branch tree) and worktree (every session in this working directory)${config.allowScopeAll ? ', plus all (every archived session, enabled by allowScopeAll)' : ''}. `,
     'Use `lcm_grep` to find archived material, `lcm_expand` to walk summary nodes progressively, and `lcm_artifact` to read a payload that was externalized for size. Prefer summaries first: raw archived messages are the last resort because they cost the most context.',
   ].join('\n');
 }

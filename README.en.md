@@ -3,8 +3,8 @@
 [中文](README.md) | **English** | [日本語](README.ja.md)
 
 **Lossless Context Memory for DeepSeek Harness** — a Host plugin that archives older session
-context outside the active prompt, folds it into a searchable tree of summaries, and
-automatically recalls the parts the current turn needs.
+context outside the active prompt, folds it into a searchable tree of summaries, and on the
+first turn after a compaction hands the model the way back to what it removed.
 
 > **Origin.** This is a port of [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm)
 > ([npm](https://www.npmjs.com/package/opencode-lcm), MIT, by Isaac Grumberg) — the OpenCode
@@ -41,8 +41,11 @@ The model does not become smarter. It stops losing the details of a long session
   archive, with oversized payloads moved out into deduplicated artifacts.
 - **Summary tree** — archived messages are folded into deterministic parent/child summary
   nodes, so the model can walk from a digest down to raw text.
-- **Automatic recall** — the pending user message becomes a search query; the best archived
-  hits are appended to that step, bounded by `automaticRetrieval.maxChars`.
+- **Automatic recall** — the first turn after a compaction gets one bounded compaction pointer:
+  the count of removed messages, the seq range, the token estimate, and the exact way back
+  (`lcm_expand` over the summary nodes in the span, or `lcm_grep --scope session`), with the
+  resume note following in the same message. Similarity recall per turn is an opt-in extra,
+  off by default.
 - **Scoped search** — one query can span just this session, its whole branch tree, every
   session in the same working directory, or every session ever archived.
 - **Privacy controls** — tool-output exclusion, path-based capture exclusion, and destructive
@@ -57,9 +60,9 @@ The model does not become smarter. It stops losing the details of a long session
 | `opencode-lcm` (OpenCode) | this plugin (DeepSeek Harness) |
 |---|---|
 | `event` hook — capture every session event | `ctx.on('session/event', …, { global: true })`, plus watermark-guarded backfill through `ctx.sessionQuery.readSession()` |
-| `experimental.chat.messages.transform` | `agent/pre-step` waterfall — appends one recalled-context message to the step's decision |
+| `experimental.chat.messages.transform` | `agent/pre-step` waterfall — appends one injected message to the step's decision (the compaction pointer, or recalled context when enabled) |
 | `experimental.chat.system.transform` | `ctx.systemPrompt.section({ name: 'lcm:hint', order: 9000 })` |
-| `experimental.session.compacting` | the resume note is delivered through automatic recall on the first turn after a `compaction/*` marker |
+| `experimental.session.compacting` | the resume note is delivered with the compaction pointer on the first turn after a `compaction/*` marker |
 | `tool` hook — 18 `lcm_*` tools | `ctx.tools.register()` — the same 18 tools |
 | `command` surface (none upstream) | `ctx.commands.register()` — the human-facing `/lcm` command |
 | `.lcm/lcm.db` (SQLite + FTS5) | `<DSH_HOME>/storages/dsh-plugin-lcm/lcm.db` (SQLite + FTS5 via `node:sqlite`) |
@@ -102,7 +105,7 @@ falls back to the default, so an empty `config: {}` is valid.
 | `capture.enabled` | `true` | Master capture switch. |
 | `capture.includeToolResults` | `true` | Archive tool outputs. |
 | `capture.maxTextCharsPerMessage` | `60000` | Per-message cap on indexed text. |
-| `automaticRetrieval.enabled` | `true` | Automatic recall on each new user turn. |
+| `automaticRetrieval.enabled` | `false` | Similarity-based recall on each new user turn; off by default. The deterministic compaction pointer and the resume note do not depend on it. |
 | `automaticRetrieval.maxChars` | `900` | Hard cap on injected recall text. |
 | `automaticRetrieval.minTokens` | `2` | Minimum query tokens before recall runs. |
 | `automaticRetrieval.maxMessageHits` / `maxSummaryHits` / `maxArtifactHits` | `2` / `1` / `1` | Per-kind quotas. |
@@ -172,18 +175,32 @@ command palette. Its output is shown to you and is not injected into the convers
 
 As everywhere else, the mutating subcommands are preview-only unless you pass `apply`.
 The command is registered through an optional dependency, so a profile without the command
-registry keeps the archive, the automatic recall and the model-facing tools. Command output is
+registry keeps the archive, the compaction pointer and the model-facing tools. Command output is
 human-only by design — it is rendered in the UI and never becomes a model message.
 
 ## Deliberate differences from opencode-lcm
 
 These are adaptations to real Harness semantics, not omissions.
 
-1. **Recalled context is durable.** The Harness commits the accepted `user/message` batch to the
-   session log, so a recall injection (tagged `source.kind = 'lcm-recall'`) is persisted rather
-   than being a transient request rewrite. This makes replay and resume deterministic; the cost
-   is bounded log growth, capped by `automaticRetrieval.maxChars` per new user turn. Continuation
-   steps claim no new prompt and are never re-injected.
+1. **The default injection is a pointer, not recalled context.** The compaction backend durably
+   records what it removed — `compaction/summary` carries `shadowedRange {start,end}`,
+   `shadowedSeqs` and `shadowedTokenCount` — so nothing has to be guessed: the first turn after a
+   compaction injects one bounded compaction pointer giving the count of removed messages, the
+   seq range, the token estimate and the exact way back (`lcm_expand` over the summary nodes in
+   the span, or `lcm_grep --scope session`), with the resume note following in the same message.
+   The pointer carries no archived content itself, is delivered exactly once per compaction, and
+   does not depend on `automaticRetrieval.enabled` — a deterministic lookup, not a search.
+   Similarity recall is the opt-in path and behaves exactly as before when enabled. The Harness
+   commits the accepted `user/message` batch to the session log, so a recall injection (tagged
+   `source.kind = 'lcm-recall'`) is persisted rather than being a transient request rewrite; the
+   cost is bounded log growth, capped by `automaticRetrieval.maxChars` per new user turn.
+   Continuation steps claim no new prompt and are never re-injected. Anchor selection counts a
+   message as operator input only when `source.kind` is absent or `'user'`; every other kind
+   (`lcm-recall`, `runtime-context`, `system-prompt`, and other plugins' tagged messages) is
+   treated as injected — the Harness emits its runtime-context snapshot as **its own separate
+   user-role message**, and the old logic took the newest user-role message, so the search query
+   became harness boilerplate: measured in a live session as ten English boilerplate terms, with
+   the operator's own Chinese contributing no terms at all.
 2. **The index stores n-grams, not raw text.** Upstream relies on FTS5's default `unicode61`
    tokenizer, which treats a whole run of Han characters as one token, so `无损上下文记忆` is
    unsearchable by `上下文`. Switching to the `trigram` tokenizer fixes that and then fails on
@@ -210,11 +227,11 @@ These are adaptations to real Harness semantics, not omissions.
    every Chinese query collapses to zero tokens and silently disables retrieval. Here CJK runs
    contribute bigrams for scoring, and the same bigram width is what the index stores, so a
    two-character Chinese query is answerable by the index itself rather than by a scan.
-5. **The compaction resume note is delivered through recall.** The Harness owns compaction and
-   offers no hook to append to the summarization input, so instead of injecting into the
-   compaction prompt the note is emitted for the first turn after a `compaction/*` marker. The
-   upstream outcome — important context survives the shrink without overriding the compaction
-   prompt — is preserved.
+5. **The compaction resume note is delivered on the first turn after a compaction.** The Harness
+   owns compaction and offers no hook to append to the summarization input, so instead of
+   injecting into the compaction prompt the note is emitted, together with the compaction pointer,
+   for the first turn after a `compaction/*` marker. The upstream outcome — important context
+   survives the shrink without overriding the compaction prompt — is preserved.
 6. **`worktree` means "same working directory".** The Harness has no git-worktree concept, so
    the `worktree` scope is every session whose `cwd` matches. `root` is the branch tree derived
    from each session header's `parentSession` chain.

@@ -28,7 +28,13 @@
 
         # --- automatic recall --------------------------------------------
         automaticRetrieval:
-          enabled: true
+          # Per-turn similarity recall is off: DSH carries its runtime context in
+          # its own `runtime-context` user-role message, and anchor selection
+          # mistook that envelope for operator input, so the query degenerated
+          # into harness boilerplate and recalled other turns' identical
+          # envelope. The deterministic compaction pointer and the resume note
+          # are always on and do not depend on this flag.
+          enabled: false
           # Hard cap on the recalled context appended to a turn.
           maxChars: 900
           # A query needs at least this many tokens before recall runs.
