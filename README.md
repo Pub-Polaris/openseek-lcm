@@ -4,9 +4,10 @@
 
 **面向 DeepSeek Harness 的无损上下文记忆** —— 一个 Host 插件：把较早的会话上下文归档到当前提示词之外，折叠成一棵可检索的摘要树，并在需要时自动召回这一轮真正用得上的部分。
 
-> **缘起。** 本项目移植自 [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm)（[npm](https://www.npmjs.com/package/opencode-lcm)，MIT，作者 Isaac Grumberg）—— 也就是 [Lossless Context Memory](https://papers.voltropy.com/LCM) 这一想法的 OpenCode 实现。归档模型、18 个工具面、scope 阶梯、排序权重，以及 dry-run 优先的维护命令，都与上游逐一对应；改动的是宿主适配层，以及一组针对 Harness 语义的修正，见[与 opencode-lcm 的有意差异](#与-opencode-lcm-的有意差异)。
+> **缘起？** 本项目移植自 [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm)（[npm](https://www.npmjs.com/package/opencode-lcm)，MIT，作者 Isaac Grumberg）—— 也就是 [Lossless Context Memory](https://papers.voltropy.com/LCM) 这一想法的 OpenCode 实现。归档模型、18 个工具面、scope 阶梯、排序权重，以及 dry-run 优先的维护命令，都与上游逐一对应；改动的是宿主适配层，以及一组针对 Harness 语义的修正，见[与 opencode-lcm 的有意差异](#与-opencode-lcm-的有意差异)。
 >
-> **它是怎么被写出来的。** 全部在 **DeepSeek Harness** 里、由 **DeepSeek V4.1 Flash**（`deepseek-v4.1-flash`）完成：架构、实现、三个测试套件，以及实机调试，都是 agent 在一个 Harness 会话里做的，对手是一个真实的六千条消息归档 —— 包括两字中文查询逼出来的检索索引重设计，以及下文记录的那个 WAL/VACUUM 顺序 bug。这个仓库里没有一行是在那个循环之外写的。
+> **它是怎么被写出来的？** 全部在 **DeepSeek Harness** 里、由 **DeepSeek V4.1 Flash**（`deepseek-v4.1-flash`）完成：架构、实现、三个测试套件，以及实机调试，都是 agent 在一个 Harness 会话里做的，对手是一个真实的六千条消息归档 —— 包括两字中文查询逼出来的检索索引重设计，以及下文记录的那个 WAL/VACUUM 顺序 bug。这个仓库里没有一行是在那个循环之外写的。
+# **~~（依然0 Coding skill野人）~~**
 
 模型不会因此变聪明。它只是不再丢掉长会话里的细节。
 
