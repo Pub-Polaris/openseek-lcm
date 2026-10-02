@@ -1,0 +1,51 @@
+{
+  "name": "@local/dsh-plugin-lcm",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lossless Context Memory for DeepSeek Harness: archives older session context outside the active prompt and recalls what the current turn needs.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pub-Polaris/openseek-lcm.git"
+  },
+  "homepage": "https://github.com/Pub-Polaris/openseek-lcm#readme",
+  "bugs": {
+    "url": "https://github.com/Pub-Polaris/openseek-lcm/issues"
+  },
+  "author": "Pub-Polaris",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "lossless-context-memory",
+    "lcm",
+    "context",
+    "memory",
+    "sqlite",
+    "fts5"
+  ],
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/en.json": "./locale/en.json",
+    "./locale/zh.json": "./locale/zh.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "locale",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

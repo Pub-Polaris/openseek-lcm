@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Lossless Context Memory",
+    "description": "Archives older session context outside the active prompt and recalls what the current turn needs."
+  }
+}

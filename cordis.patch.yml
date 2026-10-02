@@ -1,0 +1,81 @@
+# Lossless Context Memory (lcm) — bundle patch.
+#
+# Inserts one Host plugin row. It adds no service and replaces no official
+# Harness component, so the profile composition stays otherwise intact.
+#
+# All values below are defaults; the plugin applies them automatically when the
+# key is absent. Delete a key rather than setting it to an empty value.
+- insert:
+    - id: lcm
+      name: '@local/dsh-plugin-lcm'
+      config:
+        # Archive location. Deliberately unset: the plugin defaults to
+        # <DSH_HOME>/storages/dsh-plugin-lcm — DSH's own plugin-data area,
+        # namespaced to this plugin so it cannot collide with opencode-lcm's
+        # per-project .lcm store. Uncomment to move the archive, e.g.
+        #   storeDir: 'D:\lcm-archive'
+        # storeDir is derived data: it can always be rebuilt from the session logs.
+
+        # --- capture -----------------------------------------------------
+        capture:
+          enabled: true
+          # Archive tool results. Turn off to keep large command output out of
+          # the archive entirely.
+          includeToolResults: true
+          # A block longer than this is moved out of the searchable text into a
+          # deduplicated artifact readable with lcm_artifact.
+          maxTextCharsPerMessage: 60000
+
+        # --- automatic recall --------------------------------------------
+        automaticRetrieval:
+          enabled: true
+          # Hard cap on the recalled context appended to a turn.
+          maxChars: 900
+          # A query needs at least this many tokens before recall runs.
+          minTokens: 2
+          maxMessageHits: 2
+          maxSummaryHits: 1
+          maxArtifactHits: 1
+          # Escalation ladder, cheapest scope first.
+          scopeOrder: ['session', 'root', 'worktree']
+          scopeBudgets: { session: 16, root: 12, worktree: 8, all: 6 }
+          stop: { targetHits: 3, stopOnFirstScopeWithHits: false }
+
+        # --- summary tree -------------------------------------------------
+        summary:
+          strategy: deterministic-v3
+          perMessageBudget: 110
+          summaryCharBudget: 1500
+          # Children folded into one parent once a level reaches this size.
+          levelSize: 6
+          minMessagesForTransform: 16
+
+        # Newest messages kept verbatim in the model's working context; they are
+        # excluded from recall because the model already sees them.
+        freshTailMessages: 10
+
+        # --- prompt -------------------------------------------------------
+        systemHint: true
+        systemHintOrder: 9000
+
+        # --- tools --------------------------------------------------------
+        tools:
+          enabled: true
+          # Restrict the registered lcm_* suite to this list to save schema
+          # tokens on every request. Omit to register all 18 tools.
+          # expose: ['lcm_grep', 'lcm_expand', 'lcm_artifact', 'lcm_resume']
+
+        # --- retention ----------------------------------------------------
+        # staleSessionDays is disabled by default: DSH sessions are cheap to
+        # keep and pruning them is irreversible.
+        retention:
+          deletedSessionDays: 30
+          orphanBlobDays: 14
+
+        # --- privacy ------------------------------------------------------
+        # Applied before anything is stored or indexed. redactPatterns is
+        # destructive: the replacement is what gets archived.
+        privacy:
+          excludeToolPrefixes: []
+          excludePathPatterns: []
+          redactPatterns: []

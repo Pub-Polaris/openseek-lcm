@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# The archive is local derived state, never repository content. It can always be
+# rebuilt from the DeepSeek Harness session logs.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+lcm.db*
+
+# Local overrides and scratch
+*.local.yml
+.lcm-work/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
