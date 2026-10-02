@@ -314,7 +314,8 @@ MIT — see [LICENSE](./LICENSE).
 
 The design is ported from [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm) by
 **Isaac Grumberg** (MIT), the OpenCode implementation of Lossless Context Memory. Upstream's
-copyright notice is retained in the LICENSE file.
+copyright notice is retained in [NOTICE](./NOTICE), together with the paper the technique comes
+from.
 
 This is a community port. It is not affiliated with or endorsed by the DeepSeek Harness or
 OpenCode projects.
