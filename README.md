@@ -1,24 +1,14 @@
 # openseek-lcm
 
-**Lossless Context Memory for DeepSeek Harness** — a Host plugin that archives older session
-context outside the active prompt, folds it into a searchable tree of summaries, and
-automatically recalls the parts the current turn needs.
+**中文** | [English](README.en.md) | [日本語](README.ja.md)
 
-> **Origin.** This is a port of [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm)
-> ([npm](https://www.npmjs.com/package/opencode-lcm), MIT, by Isaac Grumberg) — the OpenCode
-> implementation of the [Lossless Context Memory](https://papers.voltropy.com/LCM) idea. The
-> archive model, the 18-tool surface, the scope ladder, the ranking weights and the
-> dry-run-first maintenance commands are kept one-for-one with upstream. What changed is the
-> host adapter and a set of Harness-specific corrections, listed under
-> [Deliberate differences](#deliberate-differences-from-opencode-lcm).
+**面向 DeepSeek Harness 的无损上下文记忆** —— 一个 Host 插件：把较早的会话上下文归档到当前提示词之外，折叠成一棵可检索的摘要树，并在需要时自动召回这一轮真正用得上的部分。
+
+> **缘起。** 本项目移植自 [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm)（[npm](https://www.npmjs.com/package/opencode-lcm)，MIT，作者 Isaac Grumberg）—— 也就是 [Lossless Context Memory](https://papers.voltropy.com/LCM) 这一想法的 OpenCode 实现。归档模型、18 个工具面、scope 阶梯、排序权重，以及 dry-run 优先的维护命令，都与上游逐一对应；改动的是宿主适配层，以及一组针对 Harness 语义的修正，见[与 opencode-lcm 的有意差异](#与-opencode-lcm-的有意差异)。
 >
-> **How it was built.** Entirely inside **DeepSeek Harness** running **DeepSeek V4.1 Flash**
-> (`deepseek-v4.1-flash`). The architecture, the implementation, the three test suites and the
-> live debugging were all done by the agent in a Harness session, against a real 6,000-message
-> archive — including the search-index redesign that two-character Chinese queries forced, and
-> the WAL/VACUUM ordering bug described below. Nothing here was written outside that loop.
+> **它是怎么被写出来的。** 全部在 **DeepSeek Harness** 里、由 **DeepSeek V4.1 Flash**（`deepseek-v4.1-flash`）完成：架构、实现、三个测试套件，以及实机调试，都是 agent 在一个 Harness 会话里做的，对手是一个真实的六千条消息归档 —— 包括两字中文查询逼出来的检索索引重设计，以及下文记录的那个 WAL/VACUUM 顺序 bug。这个仓库里没有一行是在那个循环之外写的。
 
-The model does not become smarter. It stops losing the details of a long session.
+模型不会因此变聪明。它只是不再丢掉长会话里的细节。
 
 ```
    session log ──capture──▶ SQLite archive ──FTS5──▶ candidate retrieval
@@ -33,214 +23,140 @@ The model does not become smarter. It stops losing the details of a long session
                         (automatic recall)                       (grep / expand / artifact)
 ```
 
-## What it does
+## 它做什么
 
-- **Archive** — every message-bearing event of every session is captured into a local SQLite
-  archive, with oversized payloads moved out into deduplicated artifacts.
-- **Summary tree** — archived messages are folded into deterministic parent/child summary
-  nodes, so the model can walk from a digest down to raw text.
-- **Automatic recall** — the pending user message becomes a search query; the best archived
-  hits are appended to that step, bounded by `automaticRetrieval.maxChars`.
-- **Scoped search** — one query can span just this session, its whole branch tree, every
-  session in the same working directory, or every session ever archived.
-- **Privacy controls** — tool-output exclusion, path-based capture exclusion, and destructive
-  regex redaction, all applied *before* anything is stored or indexed.
-- **Retention and housekeeping** — dry-run-first retention pruning, blob GC, WAL
-  checkpoint + VACUUM, an integrity doctor, and portable JSON snapshots.
+- **归档** —— 每个会话中所有承载消息的事件都被捕获进本地 SQLite 归档；过大的载荷会被外移为去重后的 artifact。
+- **摘要树** —— 已归档的消息被折叠成确定性的父子摘要节点，因此模型可以从摘要一路下钻到原文。
+- **自动召回** —— 待处理的用户消息本身成为检索查询；命中的归档片段被追加到该步，上限由 `automaticRetrieval.maxChars` 控制。
+- **分域检索** —— 一次查询可以只覆盖本会话、整棵分支树、同一工作目录下的所有会话，或是有史以来归档的全部会话。
+- **隐私控制** —— 工具输出排除、按路径排除捕获、以及破坏性正则脱敏，全部在*写入与建索引之前*生效。
+- **保留与维护** —— dry-run 优先的保留策略清理、blob GC、WAL checkpoint + VACUUM、完整性体检，以及可移植的 JSON 快照。
 
-## Mapping from OpenCode to Harness
+## 从 OpenCode 到 Harness 的映射
 
-`opencode-lcm` is built on four OpenCode extension points. Each has a Harness counterpart:
+`opencode-lcm` 建立在 OpenCode 的四个扩展点上，每一个在 Harness 里都有对等物：
 
-| `opencode-lcm` (OpenCode) | this plugin (DeepSeek Harness) |
+| `opencode-lcm`（OpenCode） | 本插件（DeepSeek Harness） |
 |---|---|
-| `event` hook — capture every session event | `ctx.on('session/event', …, { global: true })`, plus watermark-guarded backfill through `ctx.sessionQuery.readSession()` |
-| `experimental.chat.messages.transform` | `agent/pre-step` waterfall — appends one recalled-context message to the step's decision |
+| `event` 钩子 —— 捕获每个会话事件 | `ctx.on('session/event', …, { global: true })`，外加经水位线守卫、通过 `ctx.sessionQuery.readSession()` 的历史回填 |
+| `experimental.chat.messages.transform` | `agent/pre-step` 瀑布流 —— 向该步的 decision 追加一条召回上下文消息 |
 | `experimental.chat.system.transform` | `ctx.systemPrompt.section({ name: 'lcm:hint', order: 9000 })` |
-| `experimental.session.compacting` | the resume note is delivered through automatic recall on the first turn after a `compaction/*` marker |
-| `tool` hook — 18 `lcm_*` tools | `ctx.tools.register()` — the same 18 tools |
-| `command` surface (none upstream) | `ctx.commands.register()` — the human-facing `/lcm` command |
-| `.lcm/lcm.db` (SQLite + FTS5) | `<DSH_HOME>/storages/dsh-plugin-lcm/lcm.db` (SQLite + FTS5 via `node:sqlite`) |
+| `experimental.session.compacting` | 在出现 `compaction/*` 标记后的第一轮，通过自动召回投递 resume note |
+| `tool` 钩子 —— 18 个 `lcm_*` 工具 | `ctx.tools.register()` —— 同样这 18 个工具 |
+| 命令面（上游没有） | `ctx.commands.register()` —— 面向人的 `/lcm` 命令 |
+| `.lcm/lcm.db`（SQLite + FTS5） | `<DSH_HOME>/storages/dsh-plugin-lcm/lcm.db`（经 `node:sqlite` 使用的 SQLite + FTS5） |
 
-The Harness session log is already a lossless append-only record, so the archive is treated
-strictly as a **derived cache**: if a capture is ever missed, the next read notices the
-watermark lag and replays the missing prefix. Nothing in this plugin can lose conversation
-content.
+Harness 的会话日志本身就已经是一份无损的追加式记录，因此归档被严格当作**派生缓存**：万一漏掉一次捕获，下一次读取会发现水位线滞后并重放缺失的那一段前缀。这个插件不可能弄丢对话内容。
 
-## Installation
+## 安装
 
-The plugin is a plain Host bundle with no runtime dependencies beyond `node:sqlite`, which the
-Harness itself already uses for session search.
+本插件是一个普通的 Host bundle，除 `node:sqlite` 外没有任何运行时依赖 —— 而 `node:sqlite` 是 Harness 自己用于会话检索的模块。
 
 ```
 plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 ```
 
-`target` accepts anything pnpm can install — a local directory (as above), a git URL, a tarball,
-or an npm name. The composed row is named `@local/dsh-plugin-lcm`; that is only a bundle id, and
-the repository is `openseek-lcm`.
+`target` 接受 pnpm 能安装的任何形式：本地目录（如上）、git URL、tarball，或 npm 包名。组合后的插件行名为 `@local/dsh-plugin-lcm`，那只是一个 bundle id，仓库名是 `openseek-lcm`。
 
-> **Windows path caveat.** Install from a **drive-letter** path. pnpm rewrites a `\\server\share`
-> target into a broken relative symlink, and activation then fails with
-> *"cannot resolve profile bundle"*. Use a mapped drive letter or a local path.
+> **Windows 路径注意。** 请从**盘符路径**安装。pnpm 会把 `\\server\share` 形式的目标改写成一条损坏的相对符号链接，随后激活失败并报 *"cannot resolve profile bundle"*。请改用映射过的盘符或本地路径。
 
-A restart of DeepSeek Harness Desktop is required after installing or changing the plugin: the
-Cordis loader keeps the module generation it first imported. Editing a *config* value is picked
-up by a reload; editing **code** is not.
+安装或修改插件后需要重启 DeepSeek Harness Desktop：Cordis 加载器会保留它首次导入的模块代际。修改**配置**值靠重载即可生效；修改**代码**不行。
 
-## Configuration
+## 配置
 
-Set values in the plugin row's `config` (see [`cordis.patch.yml`](./cordis.patch.yml), which
-carries every key with its default and a short comment). All keys are optional; a missing key
-falls back to the default, so an empty `config: {}` is valid.
+在插件行的 `config` 里设置（参见 [`cordis.patch.yml`](./cordis.patch.yml)，其中列出每个键的默认值和简短注释）。所有键都是可选的，缺省时回落到默认值，因此 `config: {}` 也是合法的。
 
-| Key | Default | Meaning |
+| 键 | 默认值 | 含义 |
 |---|---|---|
-| `storeDir` | `<DSH_HOME>/storages/dsh-plugin-lcm` | Archive directory (DSH plugin-data area). |
-| `capture.enabled` | `true` | Master capture switch. |
-| `capture.includeToolResults` | `true` | Archive tool outputs. |
-| `capture.maxTextCharsPerMessage` | `60000` | Per-message cap on indexed text. |
-| `automaticRetrieval.enabled` | `true` | Automatic recall on each new user turn. |
-| `automaticRetrieval.maxChars` | `900` | Hard cap on injected recall text. |
-| `automaticRetrieval.minTokens` | `2` | Minimum query tokens before recall runs. |
-| `automaticRetrieval.maxMessageHits` / `maxSummaryHits` / `maxArtifactHits` | `2` / `1` / `1` | Per-kind quotas. |
-| `automaticRetrieval.scopeOrder` | `[session, root, worktree]` | Escalation ladder, cheapest first. |
-| `automaticRetrieval.scopeBudgets` | `{session:16, root:12, worktree:8, all:6}` | Candidate budget per scope. |
-| `automaticRetrieval.stop.targetHits` | `3` | Stop once this many hits are selected. |
-| `freshTailMessages` | `10` | Newest messages kept out of recall (the model already sees them). |
-| `summary.minMessagesForTransform` | `16` | Archived messages required before a summary tree is built. |
-| `summary.levelSize` | `6` | Children folded into one parent. |
-| `summary.summaryCharBudget` | `1500` | Character budget per summary node. |
-| `systemHint` / `systemHintOrder` | `true` / `9000` | The prompt section that tells the model the archive exists. |
-| `tools.enabled` | `true` | Register the `lcm_*` suite. |
-| `tools.expose` | — | Allow-list of tool names, to cut per-request schema tokens. |
-| `retention.staleSessionDays` | disabled | Prune sessions untouched for N days. |
-| `retention.deletedSessionDays` | `30` | Prune deleted sessions after N days. |
-| `retention.orphanBlobDays` | `14` | Grace period before an unreferenced blob is collectable. |
-| `privacy.excludeToolPrefixes` | `[]` | Do not archive payloads from tools with these prefixes. |
-| `privacy.excludePathPatterns` | `[]` | Suppress/redact matching paths. |
-| `privacy.redactPatterns` | `[]` | Destructively replace matches before storage. |
+| `storeDir` | `<DSH_HOME>/storages/dsh-plugin-lcm` | 归档目录（DSH 的插件数据区）。 |
+| `capture.enabled` | `true` | 捕获总开关。 |
+| `capture.includeToolResults` | `true` | 是否归档工具输出。 |
+| `capture.maxTextCharsPerMessage` | `60000` | 单条消息计入索引文本的上限。 |
+| `automaticRetrieval.enabled` | `true` | 每个新用户轮次是否自动召回。 |
+| `automaticRetrieval.maxChars` | `900` | 注入的召回文本硬上限。 |
+| `automaticRetrieval.minTokens` | `2` | 触发召回所需的最少查询词数。 |
+| `automaticRetrieval.maxMessageHits` / `maxSummaryHits` / `maxArtifactHits` | `2` / `1` / `1` | 各类别的配额。 |
+| `automaticRetrieval.scopeOrder` | `[session, root, worktree]` | 逐级放大的阶梯，从最便宜的 scope 开始。 |
+| `automaticRetrieval.scopeBudgets` | `{session:16, root:12, worktree:8, all:6}` | 每个 scope 的候选预算。 |
+| `automaticRetrieval.stop.targetHits` | `3` | 选够这么多命中即停止。 |
+| `freshTailMessages` | `10` | 不参与召回的最新消息数（模型本来就看得见）。 |
+| `summary.minMessagesForTransform` | `16` | 构建摘要树前所需的已归档消息数。 |
+| `summary.levelSize` | `6` | 折叠进一个父节点的子节点数。 |
+| `summary.summaryCharBudget` | `1500` | 单个摘要节点的字符预算。 |
+| `systemHint` / `systemHintOrder` | `true` / `9000` | 告诉模型归档存在的提示词小节。 |
+| `tools.enabled` | `true` | 是否注册 `lcm_*` 工具套件。 |
+| `tools.expose` | — | 工具名白名单，用于削减每次请求的 schema token。 |
+| `retention.staleSessionDays` | 禁用 | 清理 N 天未触碰的会话。 |
+| `retention.deletedSessionDays` | `30` | 会话被删除 N 天后清理。 |
+| `retention.orphanBlobDays` | `14` | 无引用 blob 可被回收前的宽限期。 |
+| `privacy.excludeToolPrefixes` | `[]` | 不归档来自这些前缀工具的载荷。 |
+| `privacy.excludePathPatterns` | `[]` | 抑制/脱敏匹配的路径。 |
+| `privacy.redactPatterns` | `[]` | 在存储前做破坏性替换。 |
 
-## Tools
+## 工具
 
-All 18 upstream tools are provided with the same names, arguments and defaults. Mutating tools
-are dry-run unless `apply: true`.
+上游的 18 个工具全部提供，名称、参数与默认值一致。会改数据的工具除非传 `apply: true`，否则只做 dry-run。
 
-| Tool | Purpose |
+| 工具 | 用途 |
 |---|---|
-| `lcm_status` | Archive and configuration inventory. |
-| `lcm_retrieval_debug` | Diagnostics of the last automatic recall (per scope, raw vs selected). |
-| `lcm_resume` | The durable resume note for a session. |
-| `lcm_grep` | Scoped archive search, with `offset` pagination and `summaryID` subtree restriction. |
-| `lcm_describe` | What the archive holds for a scope. |
-| `lcm_lineage` | Ancestry and direct children of a session. |
-| `lcm_expand` | Walk summary nodes; `includeRaw` only when summaries are insufficient. |
-| `lcm_artifact` | Read an externalized payload (accepts an unambiguous id prefix). |
-| `lcm_pin_session` / `lcm_unpin_session` | Protect a session from retention. |
-| `lcm_blob_stats` / `lcm_blob_gc` | Deduplicated blob inventory / orphan collection. |
-| `lcm_compact` | Prune internal events, VACUUM, then checkpoint the WAL. |
-| `lcm_doctor` | Integrity inspection; repairs FTS and summary state with `apply: true`. |
-| `lcm_retention_report` / `lcm_retention_prune` | Preview / apply the retention policy. |
-| `lcm_export_snapshot` / `lcm_import_snapshot` | Portable JSON snapshots (`merge` or `replace`). |
+| `lcm_status` | 归档与配置清单。 |
+| `lcm_retrieval_debug` | 上一次自动召回的诊断（分 scope、候选 vs 选中）。 |
+| `lcm_resume` | 某个会话的持久 resume note。 |
+| `lcm_grep` | 分域归档检索，支持 `offset` 翻页与 `summaryID` 子树限定。 |
+| `lcm_describe` | 某个 scope 里存了什么。 |
+| `lcm_lineage` | 会话的祖先链与直接子会话。 |
+| `lcm_expand` | 遍历摘要节点；只有在摘要不够用时才 `includeRaw`。 |
+| `lcm_artifact` | 读取被外移的载荷（接受无歧义的 id 前缀）。 |
+| `lcm_pin_session` / `lcm_unpin_session` | 保护某个会话不被保留策略清理。 |
+| `lcm_blob_stats` / `lcm_blob_gc` | 去重 blob 清单 / 孤儿回收。 |
+| `lcm_compact` | 剪枝内部事件、VACUUM，然后 checkpoint WAL。 |
+| `lcm_doctor` | 完整性检查；`apply: true` 时修复 FTS 与摘要状态。 |
+| `lcm_retention_report` / `lcm_retention_prune` | 预览 / 执行保留策略。 |
+| `lcm_export_snapshot` / `lcm_import_snapshot` | 可移植的 JSON 快照（`merge` 或 `replace`）。 |
 
-Every visible tool schema is attached to **every** request, so the suite costs prompt tokens on
-each call. `tools.expose` and `tools.enabled` exist to trim that cost.
+每一个可见工具的 schema 都会附着在**每一次**请求上，所以这套工具每次调用都在花提示词 token。`tools.expose` 与 `tools.enabled` 就是为削减这笔开销而存在的。
 
-## The `/lcm` command
+## `/lcm` 命令
 
-Everything else this plugin exposes is model-facing. `/lcm` is the surface a person drives
-directly from the composer — one command with subcommands, so it adds a single entry to the
-command palette. Its output is shown to you and is not injected into the conversation.
+本插件其余的部分都面向模型。`/lcm` 是人直接从 composer 驱动的入口 —— 一条命令配子命令，因此命令面板里只多一个条目。它的输出展示给你，不会被注入对话。
 
 ```
-/lcm status                               archive inventory and configuration
-/lcm grep <query> [--scope s] [--limit n] search (s = session|root|worktree|all)
-/lcm expand <nodeID|query> [raw]          progressively expand summary nodes
-/lcm describe [scope]                     what the archive holds
-/lcm resume                               the note that survives a compaction
-/lcm lineage                              this session ancestry and children
-/lcm debug                                diagnostics of the last automatic recall
-/lcm pin [reason] | unpin                 protect this session from retention
-/lcm blobstats [n]                        artifact blob inventory
-/lcm gc [apply]                           preview or delete orphaned blobs
-/lcm compact [apply]                      preview or reclaim database space
-/lcm doctor [apply]                       inspect or repair summaries and indexes
-/lcm retention [apply]                    preview or apply the retention policy
+/lcm status                               归档清单与配置
+/lcm grep <query> [--scope s] [--limit n] 检索（s = session|root|worktree|all）
+/lcm expand <nodeID|query> [raw]          逐级展开摘要节点
+/lcm describe [scope]                     该 scope 里存了什么
+/lcm resume                               能挺过压缩的那份备忘
+/lcm lineage                              本会话的祖先与子会话
+/lcm debug                                上一次自动召回的诊断
+/lcm pin [reason] | unpin                 保护本会话不被清理
+/lcm blobstats [n]                        artifact blob 清单
+/lcm gc [apply]                           预览或删除孤儿 blob
+/lcm compact [apply]                      预览或回收数据库空间
+/lcm doctor [apply]                       体检或修复摘要与索引
+/lcm retention [apply]                    预览或执行保留策略
 ```
 
-As everywhere else, the mutating subcommands are preview-only unless you pass `apply`.
-The command is registered through an optional dependency, so a profile without the command
-registry keeps the archive, the automatic recall and the model-facing tools. Command output is
-human-only by design — it is rendered in the UI and never becomes a model message.
+与其它地方一致，会改数据的子命令除非显式传 `apply`，否则只做预览。该命令通过可选依赖注册，因此一个没有命令注册表的 profile 仍然保有归档、自动召回和面向模型的工具。命令输出在设计上只给人看 —— 它渲染在 UI 里，永远不会变成模型消息。
 
-## Deliberate differences from opencode-lcm
+## 与 opencode-lcm 的有意差异
 
-These are adaptations to real Harness semantics, not omissions.
+这些都是对真实 Harness 语义的适配，不是遗漏。
 
-1. **Recalled context is durable.** The Harness commits the accepted `user/message` batch to the
-   session log, so a recall injection (tagged `source.kind = 'lcm-recall'`) is persisted rather
-   than being a transient request rewrite. This makes replay and resume deterministic; the cost
-   is bounded log growth, capped by `automaticRetrieval.maxChars` per new user turn. Continuation
-   steps claim no new prompt and are never re-injected.
-2. **The index stores n-grams, not raw text.** Upstream relies on FTS5's default `unicode61`
-   tokenizer, which treats a whole run of Han characters as one token, so `无损上下文记忆` is
-   unsearchable by `上下文`. Switching to the `trigram` tokenizer fixes that and then fails on
-   two-character words — which is the normal length of a Chinese word (召回, 诊断, 记忆, 索引).
-   Instead, `explodeForIndex` rewrites text into ordered n-grams sized per script (bigrams for
-   CJK, trigrams for Latin) and the tables index that with `unicode61`, so "does this substring
-   occur?" becomes "does this gram sequence occur adjacently?" — which holds for Latin
-   substrings and two-character Chinese words alike. The tokenizer is declared as
-   `unicode61 tokenchars '_'` so identifiers such as `store_path` keep their underscores.
-3. **Candidate retrieval is OR, precision comes from ranking.** `buildFtsQuery` turns each run
-   into a gram phrase and combines bare terms with `OR` (quoted groups with `AND`), because this
-   expression only gathers candidates: the ported JavaScript re-ranker decides order using token
-   coverage, phrase hits, role and recency, checked against the *original* text. ANDing every term
-   of a natural-language query would reject nearly every relevant message. When the index cannot
-   answer at all — a term shorter than its script gram, for instance — automatic retrieval retries
-   once with a bounded substring scan.
-   Query terms are also filtered before use. A term the archive has never seen is dropped —
-   upstream's TF-IDF order ranks such a term *first*, because a word that appears nowhere looks
-   maximally rare, which spends the whole retrieval budget on a query that can match nothing — and
-   the "appears in more than 80% of documents" stop-word rule is applied only once the corpus is
-   large enough for that ratio to be meaningful, falling back to the common terms rather than to no
-   query at all when it would otherwise discard every one of them.
-4. **CJK tokenization was added.** Upstream's `tokenizeQuery` recognizes only `[a-z0-9_]+`, so
-   every Chinese query collapses to zero tokens and silently disables retrieval. Here CJK runs
-   contribute bigrams for scoring, and the same bigram width is what the index stores, so a
-   two-character Chinese query is answerable by the index itself rather than by a scan.
-5. **The compaction resume note is delivered through recall.** The Harness owns compaction and
-   offers no hook to append to the summarization input, so instead of injecting into the
-   compaction prompt the note is emitted for the first turn after a `compaction/*` marker. The
-   upstream outcome — important context survives the shrink without overriding the compaction
-   prompt — is preserved.
-6. **`worktree` means "same working directory".** The Harness has no git-worktree concept, so
-   the `worktree` scope is every session whose `cwd` matches. `root` is the branch tree derived
-   from each session header's `parentSession` chain.
-7. **One row per message, not messages + parts.** Harness messages carry
-   `content: ContentBlock[]` inline, so the archive stores a single row per message plus
-   `artifacts` for oversized blocks; summary nodes range over log `seq` rather than array indices.
-8. **The archive lives in DSH's plugin-data area, not in `.lcm`.** Upstream stores its
-   database at `<project>/.lcm/lcm.db`. That convention belongs to opencode, and a bare
-   `lcm` directory under a shared home is easy to confuse with it, so this plugin defaults to
-   `<DSH_HOME>/storages/dsh-plugin-lcm/` — inside DSH's own configuration tree, alongside the
-   other per-plugin storage domains (`session_projcache`, `maidsh_memory`). `storeDir` overrides
-   it outright; the archive is derived data and can always be rebuilt from the session logs.
-9. **Compaction order is prune → VACUUM → checkpoint.** This is a bug fix, not a port decision.
-   `VACUUM` rewrites the whole database *through the WAL*, so checkpointing before it leaves the
-   reclaimed pages sitting in the WAL: the operation reports a small `reclaimed` value while the
-   WAL grows by the size of the database. On the development archive the first run reported
-   `reclaimed=7.6 MiB` and pushed the WAL from 48.7 MB to 89.9 MB; with the order corrected the
-   same operation reclaimed ~97.7 MiB.
-10. **Not ported:** upstream's binary preview providers (`fingerprint`, `byte-peek`,
-    `image-dimensions`, `pdf-metadata`, `zip-metadata`, `previewBytePeek`) and
-    `lcm_import_snapshot`'s `worktreeMode`. Harness tool results arrive as typed content blocks in
-    which images and files are already attachment references rendered as short placeholders, and
-    there is no worktree identity to remap.
+1. **召回上下文是持久的。** Harness 会把通过准入的 `user/message` 批次提交进会话日志，因此召回注入（标记为 `source.kind = 'lcm-recall'`）是被持久化的，而不是一次临时的请求改写。这让重放与恢复变得确定；代价是有限的日志增长，由每个新用户轮次的 `automaticRetrieval.maxChars` 封顶。续跑步不会认领新的提示词，因此永远不会被重复注入。
+2. **索引里存的是 n-gram，不是原文。** 上游依赖 FTS5 默认的 `unicode61` 分词器，它会把一整串汉字当作一个 token，于是 `无损上下文记忆` 用 `上下文` 搜不到。改用 `trigram` 分词器能修好这一点，却会让两字词失效 —— 而两字正是中文词的常态长度（召回、诊断、记忆、索引）。这里的做法是让 `explodeForIndex` 把文本改写成按文种定长的有序 n-gram（CJK 用 bigram，拉丁用 trigram），再用 `unicode61` 索引这些 gram，于是“这个子串是否出现”变成“这串 gram 是否相邻出现” —— 对拉丁子串和两字中文词同样成立。分词器声明为 `unicode61 tokenchars '_'`，因此 `store_path` 这类标识符的下划线得以保留。
+3. **候选检索用 OR，精度交给排序。** `buildFtsQuery` 把每一段转成一个 gram 短语，裸词之间用 `OR` 连接（带引号的组用 `AND`），因为这个表达式只负责收集候选：由移植过来的 JavaScript 重排器依据 token 覆盖、短语命中、角色与新旧程度，**对原文**核对后决定顺序。把自然语言查询的每个词都 AND 起来，会否掉几乎所有相关消息。当索引完全无法作答时 —— 例如某个词短于其文种的 gram 长度 —— 自动召回会用一次有界的子串扫描重试。
+   查询词在使用前还会被过滤。归档从未见过的词会被丢弃 —— 上游的 TF-IDF 排序会把这种词排到*最前*，因为一个哪儿都不出现的词看起来最稀有，结果把整个检索预算花在一个什么都匹配不到的查询上 —— 而“出现在超过 80% 文档中”的停用词规则，只在语料大到该比例有意义时才生效；当它会丢光所有词时，会回落到常见词，而不是回落到空查询。
+4. **补上了 CJK 分词。** 上游的 `tokenizeQuery` 只认 `[a-z0-9_]+`，于是任何中文查询都塌成零个 token，检索被静默关闭。这里 CJK 段会贡献 bigram 参与打分，而索引存的正是同样的 bigram 宽度，因此两字中文查询由索引本身作答，而不是靠扫描兜底。
+5. **压缩后的 resume note 通过召回投递。** Harness 掌管压缩，并且没有提供向摘要输入里追加内容的钩子，所以这里不往压缩提示词里注入，而是在出现 `compaction/*` 标记后的第一轮把备忘发出去。上游的效果 —— 重要上下文挺过收缩，同时不覆盖压缩提示词 —— 得以保留。
+6. **`worktree` 指“同一工作目录”。** Harness 没有 git worktree 的概念，因此 `worktree` scope 就是所有 `cwd` 相同的会话。`root` 则是由每个会话头部的 `parentSession` 链推出的分支树。
+7. **一条消息一行，而不是 messages + parts。** Harness 的消息把 `content: ContentBlock[]` 内联携带，因此归档为每条消息存一行，外加用于超大块的 `artifacts`；摘要节点以日志 `seq` 为范围，而不是数组下标。
+8. **归档放在 DSH 的插件数据区，而不是 `.lcm`。** 上游把数据库存在 `<project>/.lcm/lcm.db`。那个约定属于 opencode，而共享 home 下一个裸的 `lcm` 目录很容易和它混淆，所以本插件默认使用 `<DSH_HOME>/storages/dsh-plugin-lcm/` —— 位于 DSH 自己的配置树内，与其它按插件划分的存储域（`session_projcache`、`maidsh_memory`）并列。`storeDir` 可以直接覆盖它；归档是派生数据，随时可以从会话日志重建。
+9. **压缩顺序是 剪枝 → VACUUM → checkpoint。** 这是 bug 修复，不是移植取舍。`VACUUM` 会把整库**经由 WAL** 重写一遍，所以先 checkpoint 会让回收出来的页留在 WAL 里：操作报出一个很小的 `reclaimed`，而 WAL 涨了将近一个数据库那么多。在开发用的归档上，第一版顺序报的是 `reclaimed=7.6 MiB`，同时把 WAL 从 48.7 MB 推到 89.9 MB；顺序修正后同一次操作回收了约 97.7 MiB。
+10. **没有移植：** 上游的二进制预览提供者（`fingerprint`、`byte-peek`、`image-dimensions`、`pdf-metadata`、`zip-metadata`、`previewBytePeek`），以及 `lcm_import_snapshot` 的 `worktreeMode`。Harness 的工具结果是带类型的 content block，其中的图片与文件已经是渲染成短占位符的附件引用，而且没有可重映射的 worktree 身份。
 
-## Verification
+## 验证
 
-Three suites verify this plugin without a live profile. They need Node ≥ 22.5 for `node:sqlite`;
-the Host's own runtime Node works too.
+三个套件无需真实 profile 即可验证本插件。它们需要 Node ≥ 22.5 以提供 `node:sqlite`；Host 自带的运行时 Node 同样可用。
 
 ```powershell
 node test/smoke.mjs
@@ -248,34 +164,15 @@ node test/recall.mjs
 node test/plugin.mjs
 ```
 
-`test/smoke.mjs` drives the whole archive pipeline against a throwaway database with synthetic
-Harness-shaped session events (30 checks).
+`test/smoke.mjs` 用合成的 Harness 形状会话事件，在一次性数据库上跑通整条归档管线（30 项检查）。
 
-It covers capture and idempotent re-capture, artifact externalization and pre-storage redaction,
-the n-gram search primitives (`explodeForIndex`, `buildFtsQuery`), all four scopes, summary-tree
-determinism, FTS-only search (proving the index path rather than
-the fallback), CJK search, short-query scan fallback, summary-subtree restriction, progressive
-expansion, automatic recall bounds, resume notes, pins, blob stats, doctor repair, retention
-dry-run vs apply, compaction, snapshot round-trip, and tool-payload exclusion.
+它覆盖：捕获与幂等重捕、artifact 外移与入库前脱敏、n-gram 检索原语（`explodeForIndex`、`buildFtsQuery`）、全部四个 scope、摘要树的确定性、纯 FTS 检索（证明走的是索引路径而非回退路径）、CJK 检索、短词扫描回退、摘要子树限定、渐进展开、自动召回边界、resume note、pin、blob 统计、doctor 修复、保留策略的 dry-run 与 apply 之别、压缩、快照往返，以及工具载荷排除。
 
-`test/recall.mjs` covers the decision that needs a live Harness the least and a test the most:
-anchor selection against injected context, declining a continuation batch, the three sources the
-owning Agent is resolved from (including a scope that throws), injection bounds and tagging,
-resume-note escalation being consumed exactly once, and merging a plan without losing the rest of
-the step decision (11 checks).
+`test/recall.mjs` 覆盖的是“最不需要真实 Harness、却最需要测试”的那个决策：对已注入上下文的锚点选择、拒绝续跑批次、解析所属 Agent 的三种来源（包括会抛异常的 scope）、注入边界与标记、resume note 升级恰好被消费一次，以及合并计划时不丢失该步 decision 的其余部分（11 项检查）。
 
-`test/plugin.mjs` is the closest thing to a live run without a restart: it imports `index.js`
-exactly as the loader would and runs `apply()` against a minimal fake Cordis host, then asserts
-that every registration happened on the synchronous path, that all 18 tools carry usable
-schemas, that the system hint is one non-interpolating section at the configured order, that the
-scoped listeners subscribe with `global: true`, that a live `session/event` is buffered rather
-than written inline, that a tool call backfills the archive, that a real `agent/pre-step`
-dispatch injects tagged recalled context while preserving the rest of the decision, and that the
-`/lcm` definition satisfies the command-registry contract (name shape, non-empty description,
-non-empty input hint, handler function) including the raw-input shape the registry actually
-delivers — the separating space included (16 checks).
+`test/plugin.mjs` 是不重启而最接近实机运行的东西：它完全按加载器的方式导入 `index.js`，对一个小型假 Cordis 宿主执行 `apply()`，然后断言：每个注册都发生在同步路径上、18 个工具都带可用 schema、系统提示是配置顺序上的一个非插值小节、分域监听器都以 `global: true` 订阅、实时 `session/event` 是被缓冲而非就地写入、一次工具调用会回填归档、真实的 `agent/pre-step` 分发会注入带标记的召回上下文并保留 decision 的其余部分，以及 `/lcm` 定义满足命令注册表契约（名称形状、非空描述、非空 input 提示、handler 为函数），包括注册表实际交付的 raw input 形态 —— 分隔空格包含在内（16 项检查）。
 
-Live state on the development profile (2026-10-02, 6 sessions):
+开发 profile 上的实机状态（2026-10-02，6 个会话）：
 
 ```
 schema_version=3        fts_available=true      capture_failures=0
@@ -284,38 +181,22 @@ artifact_blobs=2251     shared_blobs=11          orphan_blobs=0
 db_bytes=91.7 MiB       wal_bytes=4.4 MiB
 ```
 
-The schema v2 -> v3 search-index migration was measured against a copy of that live archive:
-9,625 documents were reindexed in 1.7 s during activation, after which `召回`, `诊断`,
-`召回诊断` and `归档` — every one of them a two-character Chinese term — all matched through
-the index alone (`allowScan: false`), and automatic retrieval for `看下召回诊断` returned 3
-hits where it previously returned none.
+schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的：9,625 篇文档在激活期间用 1.7 秒重建索引，之后 `召回`、`诊断`、`召回诊断` 和 `归档` —— 每一个都是两字中文词 —— 全部仅凭索引即命中（`allowScan: false`），而 `看下召回诊断` 的自动召回从之前的 0 命中变成 3 命中。
 
-`lcm_grep "trigram tokenizer"` returned ranked hits spanning an assistant message and two
-externalized artifacts; `lcm_expand` built and walked a 3-level summary tree over real log
-sequence 1007–1144.
+`lcm_grep "trigram tokenizer"` 返回了跨越一条助手消息与两个外移 artifact 的排序结果；`lcm_expand` 在真实日志序列 1007–1144 上构建并遍历了一棵三层的摘要树。
 
-## Limitations
+## 已知限制
 
-- **Archive size is real.** 6,376 messages produced ~92 MB. Run `lcm_compact apply=true` after
-  large captures, and use `lcm_retention_report` to review growth.
-- **Summary nodes are digests, not substitutes.** A 1,500-character root cannot represent
-  thousands of messages; the tree exists to navigate down to raw text, which is why
-  `lcm_expand includeRaw=true` remains the last resort.
-- **Tool schemas cost prompt tokens on every request** while `tools.enabled` is true.
-- **Code changes need a full application restart.** Reloading the profile reuses the cached
-  module generation, so a plugin edit appears to do nothing until the process is restarted.
-- `node:sqlite` is required. It is available in this Harness build (the shipped
-  `dsh-session-query-sqlite` package uses the same module); on a build without it the plugin
-  reports the archive error and degrades instead of failing the conversation.
+- **归档体积是实打实的。** 6,376 条消息产出约 92 MB。大规模捕获之后请运行 `lcm_compact apply=true`，并用 `lcm_retention_report` 观察增长。
+- **摘要节点是摘要，不是替代品。** 一个 1,500 字符的根节点无法表示成千上万条消息；这棵树的意义在于导航到原文，这也是为什么 `lcm_expand includeRaw=true` 始终是最后手段。
+- **工具 schema 每次请求都在花提示词 token**，只要 `tools.enabled` 为真。
+- **改代码必须完整重启应用。** 重载 profile 会复用缓存的模块代际，所以改完插件看起来毫无效果，直到进程重启。
+- **需要 `node:sqlite`。** 该模块在本 Harness 构建中可用（随附的 `dsh-session-query-sqlite` 用的就是它）；在没有它的构建上，插件会报告归档错误并降级，而不是让对话失败。
 
-## Acknowledgements and licence
+## 致谢与许可
 
-MIT — see [LICENSE](./LICENSE).
+MIT —— 见 [LICENSE](./LICENSE)。
 
-The design is ported from [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm) by
-**Isaac Grumberg** (MIT), the OpenCode implementation of Lossless Context Memory. Upstream's
-copyright notice is retained in [NOTICE](./NOTICE), together with the paper the technique comes
-from.
+设计移植自 **Isaac Grumberg** 的 [`opencode-lcm`](https://github.com/Plutarch01/opencode-lcm)（MIT），即 Lossless Context Memory 的 OpenCode 实现。上游的版权声明连同该技术所出自的论文一并保留在 [NOTICE](./NOTICE) 中。
 
-This is a community port. It is not affiliated with or endorsed by the DeepSeek Harness or
-OpenCode projects.
+这是社区移植，与 DeepSeek Harness 项目及 OpenCode 项目均无隶属关系，也未获其背书。

@@ -39,6 +39,8 @@
     "locale",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
+    "README.ja.md",
     "LICENSE",
     "NOTICE"
   ],
