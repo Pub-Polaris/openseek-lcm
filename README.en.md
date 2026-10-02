@@ -47,7 +47,11 @@ The model does not become smarter. It stops losing the details of a long session
   resume note following in the same message. Similarity recall per turn is an opt-in extra,
   off by default.
 - **Scoped search** — one query can span just this session, its whole branch tree, every
-  session in the same working directory, or every session ever archived.
+  session in the same working directory, or every session ever archived. The fourth scope, `all`,
+  belongs to the operator: the human `/lcm` command always accepts it, while the model-facing
+  `lcm_grep` / `lcm_describe` tools will not use it unless the operator sets `allowScopeAll: true`,
+  because one Harness home spans projects and the model would otherwise pull another project's
+  conversation into this context.
 - **Privacy controls** — tool-output exclusion, path-based capture exclusion, and destructive
   regex redaction, all applied *before* anything is stored or indexed.
 - **Retention and housekeeping** — dry-run-first retention pruning, blob GC, WAL
@@ -119,6 +123,7 @@ falls back to the default, so an empty `config: {}` is valid.
 | `systemHint` / `systemHintOrder` | `true` / `9000` | The prompt section that tells the model the archive exists. |
 | `tools.enabled` | `true` | Register the `lcm_*` suite. |
 | `tools.expose` | — | Allow-list of tool names, to cut per-request schema tokens. |
+| `allowScopeAll` | `false` | Let the model-facing tools use the cross-project `all` scope; the human `/lcm` command is unaffected. |
 | `retention.staleSessionDays` | disabled | Prune sessions untouched for N days. |
 | `retention.deletedSessionDays` | `30` | Prune deleted sessions after N days. |
 | `retention.orphanBlobDays` | `14` | Grace period before an unreferenced blob is collectable. |
@@ -172,6 +177,8 @@ command palette. Its output is shown to you and is not injected into the convers
 /lcm doctor [apply]                       inspect or repair summaries and indexes
 /lcm retention [apply]                    preview or apply the retention policy
 ```
+
+`--scope all` stays available because the operator types it; the model-facing `lcm_grep` / `lcm_describe` tools refuse it by default, and only the operator setting `allowScopeAll: true` lets them through — one Harness home spans projects, so the model would otherwise pull another project's conversation into this context.
 
 As everywhere else, the mutating subcommands are preview-only unless you pass `apply`.
 The command is registered through an optional dependency, so a profile without the command
@@ -268,7 +275,7 @@ node test/plugin.mjs
 ```
 
 `test/smoke.mjs` drives the whole archive pipeline against a throwaway database with synthetic
-Harness-shaped session events (30 checks).
+Harness-shaped session events (~~30 checks~~ 53 checks).
 
 It covers capture and idempotent re-capture, artifact externalization and pre-storage redaction,
 the n-gram search primitives (`explodeForIndex`, `buildFtsQuery`), all four scopes, summary-tree
@@ -281,7 +288,7 @@ dry-run vs apply, compaction, snapshot round-trip, and tool-payload exclusion.
 anchor selection against injected context, declining a continuation batch, the three sources the
 owning Agent is resolved from (including a scope that throws), injection bounds and tagging,
 resume-note escalation being consumed exactly once, and merging a plan without losing the rest of
-the step decision (11 checks).
+the step decision (~~11 checks~~ 17 checks).
 
 `test/plugin.mjs` is the closest thing to a live run without a restart: it imports `index.js`
 exactly as the loader would and runs `apply()` against a minimal fake Cordis host, then asserts
@@ -292,16 +299,18 @@ than written inline, that a tool call backfills the archive, that a real `agent/
 dispatch injects tagged recalled context while preserving the rest of the decision, and that the
 `/lcm` definition satisfies the command-registry contract (name shape, non-empty description,
 non-empty input hint, handler function) including the raw-input shape the registry actually
-delivers — the separating space included (16 checks).
+delivers — the separating space included (~~16 checks~~ 20 checks).
 
-Live state on the development profile (2026-10-02, 6 sessions):
+Live state on the development profile (2026-10-02, ~~6 sessions~~ 11 sessions):
 
 ```
-schema_version=3        fts_available=true      capture_failures=0
-message_count=6376      summary_nodes=1270       artifacts=2240
-artifact_blobs=2251     shared_blobs=11          orphan_blobs=0
-db_bytes=91.7 MiB       wal_bytes=4.4 MiB
+schema_version=4        fts_available=true      capture_failures=0
+message_count=6923      summary_nodes=1368       artifacts=2582
+artifact_blobs=2589     shared_blobs=13          orphan_blobs=36
+db_bytes=64.8 MiB       wal_bytes=7.4 MiB
 ```
+
+~~The earlier reading was schema_version=3, message_count=6376, summary_nodes=1270, artifacts=2240, artifact_blobs=2251, shared_blobs=11, orphan_blobs=0, db_bytes=91.7 MiB, wal_bytes=4.4 MiB.~~ The archive has since been migrated to schema 4 and compacted; the values above are the measured ones.
 
 The schema v2 -> v3 search-index migration was measured against a copy of that live archive:
 9,625 documents were reindexed in 1.7 s during activation, after which `召回`, `诊断`,
@@ -315,8 +324,10 @@ sequence 1007–1144.
 
 ## Limitations
 
-- **Archive size is real.** 6,376 messages produced ~92 MB. Run `lcm_compact apply=true` after
-  large captures, and use `lcm_retention_report` to review growth.
+- **Archive size is real.** ~~6,376 messages produced ~92 MB.~~ 6,923 messages now occupy 64.8 MiB
+  of database (plus a 7.4 MiB WAL): schema 4 keeps each artifact body once, in the content-addressed
+  blob, and indexes only the preview, while `lcm_compact apply=true` is what returns the freed pages
+  to disk. Run it after large captures, and use `lcm_retention_report` to review growth.
 - **Summary nodes are digests, not substitutes.** A 1,500-character root cannot represent
   thousands of messages; the tree exists to navigate down to raw text, which is why
   `lcm_expand includeRaw=true` remains the last resort.

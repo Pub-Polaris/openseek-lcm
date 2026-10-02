@@ -29,7 +29,7 @@
 - **归档** —— 每个会话中所有承载消息的事件都被捕获进本地 SQLite 归档；过大的载荷会被外移为去重后的 artifact。
 - **摘要树** —— 已归档的消息被折叠成确定性的父子摘要节点，因此模型可以从摘要一路下钻到原文。
 - **自动召回** —— 压缩发生后的第一轮注入一条有界的压缩指针：被移除的消息数、seq 区间、token 估算，以及回到原文的确切路径（`lcm_expand` 对区间内的摘要节点，或 `lcm_grep --scope session`），resume note 在同一条消息里紧随其后；基于相似度的逐轮召回则是可选附加项，默认关闭。
-- **分域检索** —— 一次查询可以只覆盖本会话、整棵分支树、同一工作目录下的所有会话，或是有史以来归档的全部会话。
+- **分域检索** —— 一次查询可以只覆盖本会话、整棵分支树、同一工作目录下的所有会话，或是有史以来归档的全部会话。第四档 `all` 属于操作者：面向人的 `/lcm` 命令始终接受它，而面向模型的 `lcm_grep` / `lcm_describe` 除非操作者设置 `allowScopeAll: true`，否则不会使用它 —— 一个 Harness home 横跨多个项目，模型否则会把其它项目的对话拉进当前上下文。
 - **隐私控制** —— 工具输出排除、按路径排除捕获、以及破坏性正则脱敏，全部在*写入与建索引之前*生效。
 - **保留与维护** —— dry-run 优先的保留策略清理、blob GC、WAL checkpoint + VACUUM、完整性体检，以及可移植的 JSON 快照。
 
@@ -87,6 +87,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 | `systemHint` / `systemHintOrder` | `true` / `9000` | 告诉模型归档存在的提示词小节。 |
 | `tools.enabled` | `true` | 是否注册 `lcm_*` 工具套件。 |
 | `tools.expose` | — | 工具名白名单，用于削减每次请求的 schema token。 |
+| `allowScopeAll` | `false` | 允许面向模型的工具使用跨项目的 `all` scope；面向人的 `/lcm` 命令不受影响。 |
 | `retention.staleSessionDays` | 禁用 | 清理 N 天未触碰的会话。 |
 | `retention.deletedSessionDays` | `30` | 会话被删除 N 天后清理。 |
 | `retention.orphanBlobDays` | `14` | 无引用 blob 可被回收前的宽限期。 |
@@ -137,6 +138,8 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 /lcm retention [apply]                    预览或执行保留策略
 ```
 
+`--scope all` 仍然可用，因为它由操作者亲自输入；面向模型的 `lcm_grep` / `lcm_describe` 默认拒绝它，只有操作者设置 `allowScopeAll: true` 才会放行 —— 一个 Harness home 横跨多个项目，否则模型会把其它项目的对话拉进当前上下文。
+
 与其它地方一致，会改数据的子命令除非显式传 `apply`，否则只做预览。该命令通过可选依赖注册，因此一个没有命令注册表的 profile 仍然保有归档、压缩指针和面向模型的工具。命令输出在设计上只给人看 —— 它渲染在 UI 里，永远不会变成模型消息。
 
 ## 与 opencode-lcm 的有意差异
@@ -166,22 +169,24 @@ node test/recall.mjs
 node test/plugin.mjs
 ```
 
-`test/smoke.mjs` 用合成的 Harness 形状会话事件，在一次性数据库上跑通整条归档管线（30 项检查）。
+`test/smoke.mjs` 用合成的 Harness 形状会话事件，在一次性数据库上跑通整条归档管线（~~30 项检查~~ 53 项检查）。
 
 它覆盖：捕获与幂等重捕、artifact 外移与入库前脱敏、n-gram 检索原语（`explodeForIndex`、`buildFtsQuery`）、全部四个 scope、摘要树的确定性、纯 FTS 检索（证明走的是索引路径而非回退路径）、CJK 检索、短词扫描回退、摘要子树限定、渐进展开、自动召回边界、resume note、pin、blob 统计、doctor 修复、保留策略的 dry-run 与 apply 之别、压缩、快照往返，以及工具载荷排除。
 
-`test/recall.mjs` 覆盖的是“最不需要真实 Harness、却最需要测试”的那个决策：对已注入上下文的锚点选择、拒绝续跑批次、解析所属 Agent 的三种来源（包括会抛异常的 scope）、注入边界与标记、resume note 升级恰好被消费一次，以及合并计划时不丢失该步 decision 的其余部分（11 项检查）。
+`test/recall.mjs` 覆盖的是“最不需要真实 Harness、却最需要测试”的那个决策：对已注入上下文的锚点选择、拒绝续跑批次、解析所属 Agent 的三种来源（包括会抛异常的 scope）、注入边界与标记、resume note 升级恰好被消费一次，以及合并计划时不丢失该步 decision 的其余部分（~~11 项检查~~ 17 项检查）。
 
-`test/plugin.mjs` 是不重启而最接近实机运行的东西：它完全按加载器的方式导入 `index.js`，对一个小型假 Cordis 宿主执行 `apply()`，然后断言：每个注册都发生在同步路径上、18 个工具都带可用 schema、系统提示是配置顺序上的一个非插值小节、分域监听器都以 `global: true` 订阅、实时 `session/event` 是被缓冲而非就地写入、一次工具调用会回填归档、真实的 `agent/pre-step` 分发会注入带标记的召回上下文并保留 decision 的其余部分，以及 `/lcm` 定义满足命令注册表契约（名称形状、非空描述、非空 input 提示、handler 为函数），包括注册表实际交付的 raw input 形态 —— 分隔空格包含在内（16 项检查）。
+`test/plugin.mjs` 是不重启而最接近实机运行的东西：它完全按加载器的方式导入 `index.js`，对一个小型假 Cordis 宿主执行 `apply()`，然后断言：每个注册都发生在同步路径上、18 个工具都带可用 schema、系统提示是配置顺序上的一个非插值小节、分域监听器都以 `global: true` 订阅、实时 `session/event` 是被缓冲而非就地写入、一次工具调用会回填归档、真实的 `agent/pre-step` 分发会注入带标记的召回上下文并保留 decision 的其余部分，以及 `/lcm` 定义满足命令注册表契约（名称形状、非空描述、非空 input 提示、handler 为函数），包括注册表实际交付的 raw input 形态 —— 分隔空格包含在内（~~16 项检查~~ 20 项检查）。
 
-开发 profile 上的实机状态（2026-10-02，6 个会话）：
+开发 profile 上的实机状态（2026-10-02，~~6 个会话~~ 11 个会话）：
 
 ```
-schema_version=3        fts_available=true      capture_failures=0
-message_count=6376      summary_nodes=1270       artifacts=2240
-artifact_blobs=2251     shared_blobs=11          orphan_blobs=0
-db_bytes=91.7 MiB       wal_bytes=4.4 MiB
+schema_version=4        fts_available=true      capture_failures=0
+message_count=6923      summary_nodes=1368       artifacts=2582
+artifact_blobs=2589     shared_blobs=13          orphan_blobs=36
+db_bytes=64.8 MiB       wal_bytes=7.4 MiB
 ```
+
+~~此前的读数：schema_version=3、message_count=6376、summary_nodes=1270、artifacts=2240、artifact_blobs=2251、shared_blobs=11、orphan_blobs=0、db_bytes=91.7 MiB、wal_bytes=4.4 MiB。~~ 归档此后已迁移到 schema 4 并压缩过，上面的数值是实测结果。
 
 schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的：9,625 篇文档在激活期间用 1.7 秒重建索引，之后 `召回`、`诊断`、`召回诊断` 和 `归档` —— 每一个都是两字中文词 —— 全部仅凭索引即命中（`allowScan: false`），而 `看下召回诊断` 的自动召回从之前的 0 命中变成 3 命中。
 
@@ -189,7 +194,7 @@ schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的
 
 ## 已知限制
 
-- **归档体积是实打实的。** 6,376 条消息产出约 92 MB。大规模捕获之后请运行 `lcm_compact apply=true`，并用 `lcm_retention_report` 观察增长。
+- **归档体积是实打实的。** ~~6,376 条消息产出约 92 MB。~~ 现在 6,923 条消息对应 64.8 MiB 的数据库（另有 7.4 MiB 的 WAL）：schema 4 让每个 artifact 正文只在按内容寻址的 blob 里存一份，索引里只放预览；而把释放的页真正还回磁盘要靠 `lcm_compact apply=true`。大规模捕获之后请运行它，并用 `lcm_retention_report` 观察增长。
 - **摘要节点是摘要，不是替代品。** 一个 1,500 字符的根节点无法表示成千上万条消息；这棵树的意义在于导航到原文，这也是为什么 `lcm_expand includeRaw=true` 始终是最后手段。
 - **工具 schema 每次请求都在花提示词 token**，只要 `tools.enabled` 为真。
 - **改代码必须完整重启应用。** 重载 profile 会复用缓存的模块代际，所以改完插件看起来毫无效果，直到进程重启。
