@@ -70,7 +70,7 @@
     │   ├── config.js       # 默认值与解析
     │   └── tools.js        # 18 个 lcm_* 工具与 /lcm 命令的接线
     ├── test/               # smoke / recall / plugin 三个零依赖套件
-    ├── cordis.patch.yml    # bundle patch：插件行与全部默认配置
+    ├── cordis.patch.yml    # bundle patch：插件行与常用默认配置
     └── README.md · README.en.md · README.ja.md
 
 ---

@@ -99,9 +99,10 @@ up by a reload; editing **code** is not.
 
 ## Configuration
 
-Set values in the plugin row's `config` (see [`cordis.patch.yml`](./cordis.patch.yml), which
-carries every key with its default and a short comment). All keys are optional; a missing key
-falls back to the default, so an empty `config: {}` is valid.
+Set values in the plugin row's `config`. All keys are optional and fall back to the default, so an
+empty `config: {}` is valid. The exhaustive list with defaults is `DEFAULT_CONFIG` in
+`lib/config.js`; the table below is the readable summary, and [`cordis.patch.yml`](./cordis.patch.yml)
+shows only the keys most deployments actually set.
 
 | Key | Default | Meaning |
 |---|---|---|

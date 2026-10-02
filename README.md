@@ -65,7 +65,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 
 ## 配置
 
-在插件行的 `config` 里设置（参见 [`cordis.patch.yml`](./cordis.patch.yml)，其中列出每个键的默认值和简短注释）。所有键都是可选的，缺省时回落到默认值，因此 `config: {}` 也是合法的。
+在插件行的 `config` 里设置。所有键都是可选的，缺省时回落到默认值，因此 `config: {}` 也是合法的；带默认值的完整清单在 `lib/config.js` 的 `DEFAULT_CONFIG` 中，下表是便于阅读的摘要，而 [`cordis.patch.yml`](./cordis.patch.yml) 只列出多数部署实际会设置的键。
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
