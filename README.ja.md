@@ -37,6 +37,8 @@ Host プラグインです。
                         (automatic recall)                       (grep / expand / artifact)
 ```
 
+> **現在の状態 (2026-10-06)。** 実際のアーカイブで検証済みです (schema v4。数値は[検証](#検証)にあります)。**`lcm_retrieval_debug` と `/lcm debug` は Deprecated と表示するようになりました** — 類似度による呼び戻しは既定で無効で、コンパクション直後の最初のターンは決定論的なコンパクションポインタと resume note が担います。メンテナンスの順序と、実データで計測した落とし穴は[制限事項](#制限事項)にあります。
+
 ## 何をするのか
 
 - **アーカイブ** — すべてのセッションの、メッセージを持つすべてのイベントをローカルの SQLite
@@ -144,7 +146,7 @@ Cordis ローダーは最初にインポートしたモジュール世代を保�
 | ツール | 目的 |
 |---|---|
 | `lcm_status` | アーカイブと設定の棚卸し。 |
-| `lcm_retrieval_debug` | 直近の自動呼び戻しの診断 (スコープごと、生候補と採用の比較)。 |
+| `lcm_retrieval_debug` | **Deprecated（非推奨）**: 直近の自動呼び戻しの診断 (スコープごと、生候補と採用の比較)。類似度による呼び戻しは既定で無効 (`automaticRetrieval.enabled: false`) のため、通常は「まだ実行されていない」としか答えません。コンパクションを生き延びた内容は `lcm_resume` で確認してください。 |
 | `lcm_resume` | セッションの永続的なレジュメノート。 |
 | `lcm_grep` | スコープ付きのアーカイブ検索。`offset` によるページングと `summaryID` による部分木の限定に対応。 |
 | `lcm_describe` | あるスコープに対してアーカイブが何を保持しているか。 |
@@ -175,7 +177,7 @@ Cordis ローダーは最初にインポートしたモジュール世代を保�
 /lcm describe [scope]                     what the archive holds
 /lcm resume                               the note that survives a compaction
 /lcm lineage                              this session ancestry and children
-/lcm debug                                diagnostics of the last automatic recall
+/lcm debug [Deprecated]                    diagnostics of the last automatic recall (off by default; see resume)
 /lcm pin [reason] | unpin                 protect this session from retention
 /lcm blobstats [n]                        artifact blob inventory
 /lcm gc [apply]                           preview or delete orphaned blobs
@@ -313,16 +315,18 @@ pin、blob の統計、doctor の修復、保持ポリシーのドライラン�
 空でない入力ヒント、ハンドラ関数) を満たすこと — レジストリが実際に渡す生入力の形、
 区切りの空白も含めて — を検証します (~~16 チェック~~ 20 チェック)。
 
-開発プロファイルでのライブ状態 (2026-10-02、~~6 セッション~~ 11 セッション):
+開発プロファイルでのライブ状態 (2026-10-06、**直近のメンテナンス後の実測値**):
 
 ```
 schema_version=4        fts_available=true      capture_failures=0
-message_count=6923      summary_nodes=1368       artifacts=2582
-artifact_blobs=2589     shared_blobs=13          orphan_blobs=36
-db_bytes=64.8 MiB       wal_bytes=7.4 MiB
+session_count=30        message_count=11565     summary_nodes=2299
+artifacts=3472          artifact_blobs=3608     orphan_blobs=183
+db_bytes=106.2 MB       wal_bytes=0
 ```
 
-~~以前の読み取りは schema_version=3、message_count=6376、summary_nodes=1270、artifacts=2240、artifact_blobs=2251、shared_blobs=11、orphan_blobs=0、db_bytes=91.7 MiB、wal_bytes=4.4 MiB でした。~~ その後アーカイブは schema 4 へ移行してコンパクション済みで、上の値が実測値です。
+このときの手順は、そのままアーカイブ整理の正しい順序でもあります: `lcm_doctor apply=true` で派生層を再構築 → `lcm_pin_session` で残すべきセッションを固定 → `lcm_retention_prune` を 2 日閾値で実行して古い 12 セッションを削除 (−962 メッセージ、−283 artifact) → `lcm_compact apply=true` (剪枝 + VACUUM) で **一度に 12.4 MiB を回収**。実行前は 42 セッション、12,527 メッセージ、**104.9 MiB** でした。
+
+~~以前の読み取り (2026-10-02) は schema_version=4、message_count=6923、summary_nodes=1368、artifacts=2582、artifact_blobs=2589、shared_blobs=13、orphan_blobs=36、db_bytes=64.8 MiB、wal_bytes=7.4 MiB でした。~~ その前の schema_version=3 の読み取り (91.7 MiB) は、schema 4 への移行とコンパクションにより無効です。
 
 スキーマ v2 -> v3 の検索インデックス移行は、そのライブアーカイブのコピーに対して測定しました。
 有効化の間に 9,625 ドキュメントが 1.7 秒で再インデックス化され、その後 `召回`、`诊断`、
@@ -352,6 +356,24 @@ db_bytes=64.8 MiB       wal_bytes=7.4 MiB
 - `node:sqlite` が必要です。この Harness ビルドでは利用可能です (同梱の
   `dsh-session-query-sqlite` パッケージが同じモジュールを使っています)。それを持たないビルドでは、
   プラグインはアーカイブのエラーを報告して劣化動作に落ち、会話を失敗させはしません。
+- **類似度による呼び戻しは既定で無効で、それを報告する 2 つの入口も一緒に劣化します。**
+  `automaticRetrieval.enabled: false` のとき自動呼び戻しは決して走らないため、
+  `lcm_retrieval_debug` と `/lcm debug` は **Deprecated** です (「まだ実行されていない」としか
+  答えられません)。さらにそのテレメトリはメモリ上のマップなので、有効にしても現在のプロセスを
+  説明するだけで、再起動で失われます。
+- **保持ポリシーは既定の設定では何も削除しません。** `retention.staleSessionDays` は既定で無効で、
+  `/lcm retention apply` は閾値を受け取らず設定どおりに実行するだけ — つまり空操作です。実際に
+  削除できるのはツール `lcm_retention_prune` (`staleSessionDays` / `orphanBlobDays` を渡せます) です。
+- **年齢による整理の前には必ず pin してください。** 古いかどうかはアーカイブの `updated` 列で
+  判定され、**現在のツリーのルートセッションは更新されません** — 事前に `lcm_pin_session` しないと、
+  自分の分岐ツリーのルートを消してしまい、セッション横断の呼び戻しが効かなくなります。
+- **blob GC の猶予期間は設定値のみを見ます。** `lcm_blob_gc` は `orphanBlobDays` の上書きを無視します
+  (0 を渡しても空操作で、新たに孤立した blob に印を付けて計時を始めるだけ。削除は後続の呼び出し)。
+  すぐに回収したい場合は `lcm_retention_prune` を使ってください。また 1 回あたり各種類 50 行が上限なので、
+  数百件を消すには繰り返し呼ぶ必要があります。
+- **容量の大半はメッセージ行と FTS インデックスで、blob ではありません。** 実測で blob 3,700 個は
+  合計約 14 MB、データベースは約 100 MB です。その領域をディスクへ返すのが
+  `lcm_compact apply=true` (VACUUM) で、実測では 1 回で 12 MB を回収しました。
 
 ## 謝辞とライセンス
 

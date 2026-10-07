@@ -35,6 +35,8 @@ The model does not become smarter. It stops losing the details of a long session
                         (automatic recall)                       (grep / expand / artifact)
 ```
 
+> **Current state (2026-10-06).** Verified against a live archive (schema v4; the readings are in [Verification](#verification)). **`lcm_retrieval_debug` and `/lcm debug` are now marked Deprecated** — similarity recall is off by default, and the first turn after a compaction is served by the deterministic compaction pointer plus the resume note. The maintenance order and the traps measured on real data are in [Limitations](#limitations).
+
 ## What it does
 
 - **Archive** — every message-bearing event of every session is captured into a local SQLite
@@ -140,7 +142,7 @@ are dry-run unless `apply: true`.
 | Tool | Purpose |
 |---|---|
 | `lcm_status` | Archive and configuration inventory. |
-| `lcm_retrieval_debug` | Diagnostics of the last automatic recall (per scope, raw vs selected). |
+| `lcm_retrieval_debug` | **Deprecated**: diagnostics of the last automatic recall (per scope, raw vs selected). Similarity recall is off by default (`automaticRetrieval.enabled: false`), so it normally only answers "not run yet"; use `lcm_resume` for what survives a compaction. |
 | `lcm_resume` | The durable resume note for a session. |
 | `lcm_grep` | Scoped archive search, with `offset` pagination and `summaryID` subtree restriction. |
 | `lcm_describe` | What the archive holds for a scope. |
@@ -170,7 +172,7 @@ command palette. Its output is shown to you and is not injected into the convers
 /lcm describe [scope]                     what the archive holds
 /lcm resume                               the note that survives a compaction
 /lcm lineage                              this session ancestry and children
-/lcm debug                                diagnostics of the last automatic recall
+/lcm debug [Deprecated]                    diagnostics of the last automatic recall (off by default; see resume)
 /lcm pin [reason] | unpin                 protect this session from retention
 /lcm blobstats [n]                        artifact blob inventory
 /lcm gc [apply]                           preview or delete orphaned blobs
@@ -302,16 +304,18 @@ dispatch injects tagged recalled context while preserving the rest of the decisi
 non-empty input hint, handler function) including the raw-input shape the registry actually
 delivers — the separating space included (~~16 checks~~ 20 checks).
 
-Live state on the development profile (2026-10-02, ~~6 sessions~~ 11 sessions):
+Live state on the development profile (2026-10-06, the readings **after the most recent maintenance pass**):
 
 ```
 schema_version=4        fts_available=true      capture_failures=0
-message_count=6923      summary_nodes=1368       artifacts=2582
-artifact_blobs=2589     shared_blobs=13          orphan_blobs=36
-db_bytes=64.8 MiB       wal_bytes=7.4 MiB
+session_count=30        message_count=11565     summary_nodes=2299
+artifacts=3472          artifact_blobs=3608     orphan_blobs=183
+db_bytes=106.2 MB       wal_bytes=0
 ```
 
-~~The earlier reading was schema_version=3, message_count=6376, summary_nodes=1270, artifacts=2240, artifact_blobs=2251, shared_blobs=11, orphan_blobs=0, db_bytes=91.7 MiB, wal_bytes=4.4 MiB.~~ The archive has since been migrated to schema 4 and compacted; the values above are the measured ones.
+That pass is also the correct order for cleaning an archive: `lcm_doctor apply=true` to rebuild the derived layers → `lcm_pin_session` to protect the sessions that must survive → `lcm_retention_prune` at a two-day threshold, which dropped 12 stale sessions (−962 messages, −283 artifacts) → `lcm_compact apply=true` (prune + VACUUM, **12.4 MiB reclaimed in one go**). Before it: 42 sessions, 12,527 messages, **104.9 MiB**.
+
+~~The earlier reading (2026-10-02) was schema_version=4, message_count=6923, summary_nodes=1368, artifacts=2582, artifact_blobs=2589, shared_blobs=13, orphan_blobs=36, db_bytes=64.8 MiB, wal_bytes=7.4 MiB.~~ The schema_version=3 reading before that (91.7 MiB) is void after the schema 4 migration and compaction.
 
 The schema v2 -> v3 search-index migration was measured against a copy of that live archive:
 9,625 documents were reindexed in 1.7 s during activation, after which `召回`, `诊断`,
@@ -338,6 +342,26 @@ sequence 1007–1144.
 - `node:sqlite` is required. It is available in this Harness build (the shipped
   `dsh-session-query-sqlite` package uses the same module); on a build without it the plugin
   reports the archive error and degrades instead of failing the conversation.
+- **Similarity recall is off by default, and the two surfaces that report on it degrade with it.**
+  With `automaticRetrieval.enabled: false` no automatic recall ever runs, so
+  `lcm_retrieval_debug` and `/lcm debug` are **Deprecated** (they can only answer "not run
+  yet"). Their telemetry is also an in-memory map, so even when enabled it only describes the
+  current process and is lost on restart.
+- **The retention policy prunes nothing as configured.** `retention.staleSessionDays` is
+  disabled by default and `/lcm retention apply` runs the policy as configured without accepting
+  a threshold — so it is a no-op. The tool `lcm_retention_prune` is the one that can pass
+  `staleSessionDays` / `orphanBlobDays` and actually clean.
+- **Pin before any age-based cleanup.** Staleness is judged from the archive's `updated` column,
+  and the **root session of the current tree is never updated** — so without a prior
+  `lcm_pin_session` a cleanup deletes the root of your own branch tree and cross-session recall
+  goes blind.
+- **Blob GC honours the configured grace only.** `lcm_blob_gc` ignores an `orphanBlobDays`
+  override (passing 0 is a no-op: it stamps newly orphaned blobs and starts the clock, and only a
+  later call can delete them); use `lcm_retention_prune` to reclaim them immediately. Each
+  category is also capped at 50 rows per call, so clearing hundreds takes repeated calls.
+- **The bulk is message rows and the FTS index, not blobs.** Measured: 3,700 blobs total about
+  14 MB, while the database is about 100 MB. Returning that space to disk is what
+  `lcm_compact apply=true` (VACUUM) is for — 12 MB in a single measured pass.
 
 ## Acknowledgements and licence
 

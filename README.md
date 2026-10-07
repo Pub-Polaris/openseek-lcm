@@ -9,6 +9,8 @@
 > **它是怎么被写出来的？** 全部在 **DeepSeek Harness** 里、由 **DeepSeek V4.1 Flash**（`deepseek-v4.1-flash`）完成：架构、实现、三个测试套件，以及实机调试，都是 agent 在一个 Harness 会话里做的，对手是一个真实的六千条消息归档 —— 包括两字中文查询逼出来的检索索引重设计，以及下文记录的那个 WAL/VACUUM 顺序 bug。这个仓库里没有一行是在那个循环之外写的。
 # **~~（依然0 Coding skill野人）~~**
 
+> **当前状态（2026-10-06）**：已在真实档案上验证（schema v4；读数见[验证](#验证)）。**`lcm_retrieval_debug` 与 `/lcm debug` 已标记 Deprecated** —— 相似度召回默认关闭，压缩后的第一轮走的是确定性的压缩指针 + resume note。维护顺序与已实测的陷阱写在[已知限制](#已知限制)。
+
 模型不会因此变聪明。它只是不再丢掉长会话里的细节。
 
 ```
@@ -102,7 +104,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 | 工具 | 用途 |
 |---|---|
 | `lcm_status` | 归档与配置清单。 |
-| `lcm_retrieval_debug` | 上一次自动召回的诊断（分 scope、候选 vs 选中）。 |
+| `lcm_retrieval_debug` | **已弃用（Deprecated）**：上一次自动召回的诊断（分 scope、候选 vs 选中）。相似度召回默认关闭（`automaticRetrieval.enabled: false`），所以它通常只会答"还没跑过"；要看能挺过压缩的东西请用 `lcm_resume`。 |
 | `lcm_resume` | 某个会话的持久 resume note。 |
 | `lcm_grep` | 分域归档检索，支持 `offset` 翻页与 `summaryID` 子树限定。 |
 | `lcm_describe` | 某个 scope 里存了什么。 |
@@ -129,7 +131,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 /lcm describe [scope]                     该 scope 里存了什么
 /lcm resume                               能挺过压缩的那份备忘
 /lcm lineage                              本会话的祖先与子会话
-/lcm debug                                上一次自动召回的诊断
+/lcm debug [Deprecated]                   上一次自动召回的诊断（默认关闭；看 resume）
 /lcm pin [reason] | unpin                 保护本会话不被清理
 /lcm blobstats [n]                        artifact blob 清单
 /lcm gc [apply]                           预览或删除孤儿 blob
@@ -177,16 +179,18 @@ node test/plugin.mjs
 
 `test/plugin.mjs` 是不重启而最接近实机运行的东西：它完全按加载器的方式导入 `index.js`，对一个小型假 Cordis 宿主执行 `apply()`，然后断言：每个注册都发生在同步路径上、18 个工具都带可用 schema、系统提示是配置顺序上的一个非插值小节、分域监听器都以 `global: true` 订阅、实时 `session/event` 是被缓冲而非就地写入、一次工具调用会回填归档、真实的 `agent/pre-step` 分发会注入带标记的召回上下文并保留 decision 的其余部分，以及 `/lcm` 定义满足命令注册表契约（名称形状、非空描述、非空 input 提示、handler 为函数），包括注册表实际交付的 raw input 形态 —— 分隔空格包含在内（~~16 项检查~~ 20 项检查）。
 
-开发 profile 上的实机状态（2026-10-02，~~6 个会话~~ 11 个会话）：
+开发 profile 上的实机状态（2026-10-06，**最近一次维护之后的读数**）：
 
 ```
 schema_version=4        fts_available=true      capture_failures=0
-message_count=6923      summary_nodes=1368       artifacts=2582
-artifact_blobs=2589     shared_blobs=13          orphan_blobs=36
-db_bytes=64.8 MiB       wal_bytes=7.4 MiB
+session_count=30        message_count=11565     summary_nodes=2299
+artifacts=3472          artifact_blobs=3608     orphan_blobs=183
+db_bytes=106.2 MB       wal_bytes=0
 ```
 
-~~此前的读数：schema_version=3、message_count=6376、summary_nodes=1270、artifacts=2240、artifact_blobs=2251、shared_blobs=11、orphan_blobs=0、db_bytes=91.7 MiB、wal_bytes=4.4 MiB。~~ 归档此后已迁移到 schema 4 并压缩过，上面的数值是实测结果。
+那次维护的顺序，也就是"清理归档"的正确顺序：`lcm_doctor apply=true` 修派生层 → `lcm_pin_session` 固定必须保留的会话 → `lcm_retention_prune` 按 2 天阈值清掉 12 个陈旧会话（−962 条消息、−283 个 artifact）→ `lcm_compact apply=true` 剪枝 + VACUUM，**一次回收 12.4 MiB**。清理前是 42 个会话、12,527 条消息、**104.9 MiB**。
+
+~~此前的读数（2026-10-02）：schema_version=4、message_count=6923、summary_nodes=1368、artifacts=2582、artifact_blobs=2589、shared_blobs=13、orphan_blobs=36、db_bytes=64.8 MiB、wal_bytes=7.4 MiB。~~ 更早的 schema_version=3 读数（91.7 MiB）已随 schema 4 迁移与压缩一并作废。
 
 schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的：9,625 篇文档在激活期间用 1.7 秒重建索引，之后 `召回`、`诊断`、`召回诊断` 和 `归档` —— 每一个都是两字中文词 —— 全部仅凭索引即命中（`allowScan: false`），而 `看下召回诊断` 的自动召回从之前的 0 命中变成 3 命中。
 
@@ -199,6 +203,11 @@ schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的
 - **工具 schema 每次请求都在花提示词 token**，只要 `tools.enabled` 为真。
 - **改代码必须完整重启应用。** 重载 profile 会复用缓存的模块代际，所以改完插件看起来毫无效果，直到进程重启。
 - **需要 `node:sqlite`。** 该模块在本 Harness 构建中可用（随附的 `dsh-session-query-sqlite` 用的就是它）；在没有它的构建上，插件会报告归档错误并降级，而不是让对话失败。
+- **相似度召回默认关闭，相关的两个入口据此降级。** `automaticRetrieval.enabled: false` 时不会有任何自动召回，所以 `lcm_retrieval_debug` 与 `/lcm debug` **已弃用**（只会答"还没跑过"）。它们的遥测还是一张**内存表**，即便开启也只描述当前进程，重启即丢。
+- **保留策略在默认配置下什么都不清。** `retention.staleSessionDays` 默认**禁用**，而 `/lcm retention apply` 只按配置执行、**无法传阈值** ⇒ 它是空操作。能一次性清理的是工具 `lcm_retention_prune`（可传 `staleSessionDays` / `orphanBlobDays`）。
+- **按年龄清理之前必须先 pin。** 陈旧与否看归档里的 `updated`，而**当前会话的根会话不再被更新** ⇒ 不先 `lcm_pin_session` 就会砍掉自己所在分支树的根，跨会话召回随即失效。
+- **blob GC 的宽限期只认配置。** `lcm_blob_gc` 忽略 `orphanBlobDays` 覆盖参数（传 0 是空操作：给新孤儿盖章并开始计时，此后的调用才可能删）；要立刻回收请用 `lcm_retention_prune`。且每一类每次上限 50 条，清几百个需反复调用。
+- **体积的大头是消息行与 FTS 索引，不是 blob。** 实测 3,700 个 blob 合计约 14 MB，而库约 100 MB；把空间真正还回磁盘靠 `lcm_compact apply=true` 的 VACUUM（实测一次回收 12 MB 量级）。
 
 ## 致谢与许可
 
