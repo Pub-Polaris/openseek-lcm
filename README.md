@@ -9,7 +9,7 @@
 > **它是怎么被写出来的？** 全部在 **DeepSeek Harness** 里、由 **DeepSeek V4.1 Flash**（`deepseek-v4.1-flash`）完成：架构、实现、三个测试套件，以及实机调试，都是 agent 在一个 Harness 会话里做的，对手是一个真实的六千条消息归档 —— 包括两字中文查询逼出来的检索索引重设计，以及下文记录的那个 WAL/VACUUM 顺序 bug。这个仓库里没有一行是在那个循环之外写的。
 # **~~（依然0 Coding skill野人）~~**
 
-> **当前状态（2026-10-06）**：已在真实档案上验证（schema v4；读数见[验证](#验证)）。**`lcm_retrieval_debug` 与 `/lcm debug` 已标记 Deprecated** —— 相似度召回默认关闭，压缩后的第一轮走的是确定性的压缩指针 + resume note。维护顺序与已实测的陷阱写在[已知限制](#已知限制)。
+> **当前状态（2026-10-08）**：已在真实档案上验证（schema v4；读数见[验证](#验证)）。**`lcm_retrieval_debug` 与 `/lcm debug` 已标记 Deprecated** —— 相似度召回默认关闭，压缩后的第一轮走的是确定性的压缩指针 + resume note。维护顺序与已实测的陷阱写在[已知限制](#已知限制)。
 
 模型不会因此变聪明。它只是不再丢掉长会话里的细节。
 
@@ -179,7 +179,7 @@ node test/plugin.mjs
 
 `test/plugin.mjs` 是不重启而最接近实机运行的东西：它完全按加载器的方式导入 `index.js`，对一个小型假 Cordis 宿主执行 `apply()`，然后断言：每个注册都发生在同步路径上、18 个工具都带可用 schema、系统提示是配置顺序上的一个非插值小节、分域监听器都以 `global: true` 订阅、实时 `session/event` 是被缓冲而非就地写入、一次工具调用会回填归档、真实的 `agent/pre-step` 分发会注入带标记的召回上下文并保留 decision 的其余部分，以及 `/lcm` 定义满足命令注册表契约（名称形状、非空描述、非空 input 提示、handler 为函数），包括注册表实际交付的 raw input 形态 —— 分隔空格包含在内（~~16 项检查~~ 20 项检查）。
 
-开发 profile 上的实机状态（2026-10-06，**最近一次维护之后的读数**）：
+开发 profile 上的实机状态（2026-10-08，**最近一次维护之后的读数**）：
 
 ```
 schema_version=4        fts_available=true      capture_failures=0

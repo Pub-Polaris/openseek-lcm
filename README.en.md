@@ -35,7 +35,7 @@ The model does not become smarter. It stops losing the details of a long session
                         (automatic recall)                       (grep / expand / artifact)
 ```
 
-> **Current state (2026-10-06).** Verified against a live archive (schema v4; the readings are in [Verification](#verification)). **`lcm_retrieval_debug` and `/lcm debug` are now marked Deprecated** — similarity recall is off by default, and the first turn after a compaction is served by the deterministic compaction pointer plus the resume note. The maintenance order and the traps measured on real data are in [Limitations](#limitations).
+> **Current state (2026-10-08).** Verified against a live archive (schema v4; the readings are in [Verification](#verification)). **`lcm_retrieval_debug` and `/lcm debug` are now marked Deprecated** — similarity recall is off by default, and the first turn after a compaction is served by the deterministic compaction pointer plus the resume note. The maintenance order and the traps measured on real data are in [Limitations](#limitations).
 
 ## What it does
 
@@ -304,7 +304,7 @@ dispatch injects tagged recalled context while preserving the rest of the decisi
 non-empty input hint, handler function) including the raw-input shape the registry actually
 delivers — the separating space included (~~16 checks~~ 20 checks).
 
-Live state on the development profile (2026-10-06, the readings **after the most recent maintenance pass**):
+Live state on the development profile (2026-10-08, the readings **after the most recent maintenance pass**):
 
 ```
 schema_version=4        fts_available=true      capture_failures=0
