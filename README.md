@@ -134,11 +134,14 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 /lcm debug [Deprecated]                   上一次自动召回的诊断（默认关闭；看 resume）
 /lcm pin [reason] | unpin                 保护本会话不被清理
 /lcm blobstats [n]                        artifact blob 清单
-/lcm gc [apply]                           预览或删除孤儿 blob
+/lcm gc [apply] [--orphanBlobDays n]      预览或删除孤儿 blob
 /lcm compact [apply]                      预览或回收数据库空间
 /lcm doctor [apply]                       体检或修复摘要与索引
-/lcm retention [apply]                    预览或执行保留策略
+/lcm retention [apply] [--staleSessionDays n] [--deletedSessionDays n] [--orphanBlobDays n]
+                                          预览或执行保留策略
 ```
+
+阈值参数直接传给保留策略，覆盖 profile 里的配置。这条是必须的：随附默认值里 `retention.staleSessionDays` 是**禁用**的，不传阈值的 `apply` 实际上什么都不清。同理 `--orphanBlobDays 0` 能立刻回收已过宽限期的孤儿 blob（本次首次观察到的那一批只会被打上时间戳，下一次调用才可回收）。
 
 `--scope all` 仍然可用，因为它由操作者亲自输入；面向模型的 `lcm_grep` / `lcm_describe` 默认拒绝它，只有操作者设置 `allowScopeAll: true` 才会放行 —— 一个 Harness home 横跨多个项目，否则模型会把其它项目的对话拉进当前上下文。
 
@@ -204,10 +207,24 @@ schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的
 - **改代码必须完整重启应用。** 重载 profile 会复用缓存的模块代际，所以改完插件看起来毫无效果，直到进程重启。
 - **需要 `node:sqlite`。** 该模块在本 Harness 构建中可用（随附的 `dsh-session-query-sqlite` 用的就是它）；在没有它的构建上，插件会报告归档错误并降级，而不是让对话失败。
 - **相似度召回默认关闭，相关的两个入口据此降级。** `automaticRetrieval.enabled: false` 时不会有任何自动召回，所以 `lcm_retrieval_debug` 与 `/lcm debug` **已弃用**（只会答"还没跑过"）。它们的遥测还是一张**内存表**，即便开启也只描述当前进程，重启即丢。
-- **保留策略在默认配置下什么都不清。** `retention.staleSessionDays` 默认**禁用**，而 `/lcm retention apply` 只按配置执行、**无法传阈值** ⇒ 它是空操作。能一次性清理的是工具 `lcm_retention_prune`（可传 `staleSessionDays` / `orphanBlobDays`）。
+- **保留策略在默认配置下什么都不清。** `retention.staleSessionDays` 默认**禁用**，所以不传阈值的 `/lcm retention apply` 依然是空操作。阈值现在可以直接传给命令（`--staleSessionDays` / `--deletedSessionDays` / `--orphanBlobDays`），工具 `lcm_retention_prune` 同样接受它们。
 - **按年龄清理之前必须先 pin。** 陈旧与否看归档里的 `updated`，而**当前会话的根会话不再被更新** ⇒ 不先 `lcm_pin_session` 就会砍掉自己所在分支树的根，跨会话召回随即失效。
-- **blob GC 的宽限期只认配置。** `lcm_blob_gc` 忽略 `orphanBlobDays` 覆盖参数（传 0 是空操作：给新孤儿盖章并开始计时，此后的调用才可能删）；要立刻回收请用 `lcm_retention_prune`。且每一类每次上限 50 条，清几百个需反复调用。
+- **blob GC 的宽限期语义。** `lcm_blob_gc` 与 `/lcm gc` 都接受 `orphanBlobDays`（传 `0` 表示不留宽限期）。但**本次首次被观察到**的那批孤儿只会被打上 `orphaned_at` 时间戳，要下一次调用才可回收；已经观察过一段时间的孤儿不受此限。且每一类每次上限 50 条，清几百个需反复调用。
 - **体积的大头是消息行与 FTS 索引，不是 blob。** 实测 3,700 个 blob 合计约 14 MB，而库约 100 MB；把空间真正还回磁盘靠 `lcm_compact apply=true` 的 VACUUM（实测一次回收 12 MB 量级）。
+
+## 预留：一个对话一个目录
+
+我们在上游提了一条建议（[deepseek-ai/deepseek-harness #9713](https://github.com/deepseek-ai/deepseek-harness/discussions/9713)）：**让一个对话在共享工作区里拥有自己的子目录** —— 共享根放 `AGENTS.md` 和公共文件，每个对话只在自己那格里写。
+
+它要是落地了，这个插件会受一点影响，所以适配代码先写好、**注释着放在那儿**，等上游定了再开：
+
+> **在哪**：`lib/store.js` 里 `worktreeKeyOf()` 正下方那一大段 `RESERVED FOR: one directory per conversation`。
+
+**为什么要改**：`worktree` scope 现在的含义是"cwd 相同的所有会话"。一旦每个对话都有独立 cwd，这个 scope 就只会剩下当前会话一个 —— 不报错，但 `session → worktree → all` 这级阶梯会**静默地塌掉**。改法是按"包含它的那个共享工作区根"来分桶，跟"一份共享 `AGENTS.md` 能覆盖所有对话"是同一个动作。
+
+**别提前开**：在今天的模型下（一个工作区 = 一个 cwd），按共享根分桶会把同一工作区里的所有会话**并成一个** `worktree` scope，正好和它的用途相反。注释里写了要动的三个调用点，以及为什么现在不能开。
+
+---
 
 ## 致谢与许可
 

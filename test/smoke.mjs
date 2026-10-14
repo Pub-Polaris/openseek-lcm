@@ -1072,6 +1072,94 @@ check('retention report is safe and prune is explicit', () => {
   assert.match(after, /pruned_sessions=\d+/);
 });
 
+check('a re-captured message indexes under the session that owns it', () => {
+  // A message belongs to the session that first captured it: the base upsert
+  // deliberately leaves `session_id` alone so a fork re-capturing the same
+  // message id cannot move it. The search row used to be written under whoever
+  // captured *last*, so the two disagreed -- and a session-scoped delete only
+  // matches one of them. `DELETE FROM messages WHERE session_id = ?` removed the
+  // base row while `DELETE FROM message_fts WHERE session_id = ?` found nothing
+  // to remove, leaving a search row that `lcm_grep` still returned for content
+  // that no longer existed.
+  const { store: forked, dir: forkedDir } = tempStore('fts-owner');
+  try {
+    const owner = { ...header, id: 'session-owner' };
+    const child = { ...header, id: 'session-child' };
+    forked.upsertSession(owner);
+    forked.upsertSession(child);
+
+    let seq = 0;
+    const message = (id, text) => ({
+      type: 'user/message',
+      seq: seq++,
+      time: Date.now(),
+      data: { id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } },
+    });
+    assert.equal(forked.capture(owner, [message('shared-message', 'OWNER-BODY-TOKEN')]).captured, 1);
+    seq = 0; // the forked child replays the same message id from its own frontier
+    assert.equal(forked.capture(child, [message('shared-message', 'OWNER-BODY-TOKEN')]).captured, 1);
+
+    const baseOwner = forked.get('SELECT session_id FROM messages WHERE message_id = ?', 'shared-message')?.session_id;
+    const searchOwner = forked.get('SELECT session_id FROM message_fts WHERE message_id = ?', 'shared-message')?.session_id;
+    assert.equal(baseOwner, 'session-owner', 'the first capture keeps ownership');
+    assert.equal(searchOwner, baseOwner, 'the search row carries the base row owner');
+  } finally {
+    forked.close();
+    fs.rmSync(forkedDir, { recursive: true, force: true });
+  }
+});
+
+check('doctor reports and repairs search rows with no base row', () => {
+  // Counting drift cannot see this: an orphaned search row can be exactly offset
+  // by an unindexed base row, leaving the totals equal while `lcm_grep` still
+  // returns deleted content. Doctor has to ask whether the base row exists.
+  const { store: drifting, dir: driftDir } = tempStore('fts-orphan');
+  try {
+    drifting.upsertSession(header);
+    let seq = 0;
+    drifting.capture(header, [
+      {
+        type: 'user/message',
+        seq: seq++,
+        time: Date.now(),
+        data: { id: 'orphan-candidate', role: 'user', content: [{ type: 'text', text: 'ORPHAN-BODY-TOKEN' }], source: { kind: 'user' } },
+      },
+    ]);
+    // Manufacture the damage the old indexing path left behind: a search row
+    // whose message is gone. Then pair it with a live row that was never
+    // indexed, so `fts` and `base` still count the same and only the
+    // existence question can see the damage.
+    drifting.run('DELETE FROM messages WHERE message_id = ?', 'orphan-candidate');
+    drifting.run(
+      `INSERT INTO messages (message_id, session_id, seq, role, created_at, info_json, text)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      'never-indexed',
+      header.id,
+      999,
+      'user',
+      Date.now(),
+      '{}',
+      'a row the index never saw',
+    );
+    const counts = drifting.get(
+      `SELECT (SELECT COUNT(*) FROM message_fts) AS fts,
+              (SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL) AS base`,
+    );
+    assert.equal(counts.fts, counts.base, 'the totals agree, so counting cannot see it');
+    const orphans = () => drifting.get(
+      'SELECT COUNT(*) AS n FROM message_fts f WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = f.message_id)',
+    )?.n ?? 0;
+    assert.equal(orphans(), 1, 'the fixture really is orphaned');
+
+    assert.match(drifting.runDoctor({}), /fts_rows_without_base corpus=message count=1/);
+    drifting.runDoctor({ apply: true });
+    assert.equal(orphans(), 0, 'the rebuild drops the orphan');
+  } finally {
+    drifting.close();
+    fs.rmSync(driftDir, { recursive: true, force: true });
+  }
+});
+
 check('compact previews then reclaims', () => {
   assert.match(store.compact({ limit: 5 }), /Preview only/);
   const applied = store.compact({ apply: true, limit: 5 });

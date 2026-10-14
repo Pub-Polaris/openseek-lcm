@@ -180,11 +180,14 @@ Cordis ローダーは最初にインポートしたモジュール世代を保�
 /lcm debug [Deprecated]                    diagnostics of the last automatic recall (off by default; see resume)
 /lcm pin [reason] | unpin                 protect this session from retention
 /lcm blobstats [n]                        artifact blob inventory
-/lcm gc [apply]                           preview or delete orphaned blobs
+/lcm gc [apply] [--orphanBlobDays n]      preview or delete orphaned blobs
 /lcm compact [apply]                      preview or reclaim database space
 /lcm doctor [apply]                       inspect or repair summaries and indexes
-/lcm retention [apply]                    preview or apply the retention policy
+/lcm retention [apply] [--staleSessionDays n] [--deletedSessionDays n] [--orphanBlobDays n]
+                                          preview or apply the retention policy
 ```
+
+閾値は保持ポリシーへそのまま渡され、プロファイルの設定を上書きします。これは必須です。同梱の既定値では `retention.staleSessionDays` が**無効**なので、閾値を渡さない `apply` は実際には何も削除しません。同様に `--orphanBlobDays 0` は、猶予期間を過ぎた孤立 blob を即座に回収します (その呼び出しで初めて孤立として観測されたバッチはタイムスタンプを打たれるだけで、回収可能になるのは次の呼び出しです)。
 
 `--scope all` は操作者自身が入力するものなので、引き続き利用できます。モデル向けの `lcm_grep` / `lcm_describe` は既定ではこれを拒否し、操作者が `allowScopeAll: true` を設定したときだけ通します — 1 つの Harness ホームはプロジェクトをまたぐため、そうしなければモデルが他のプロジェクトの会話をこのコンテキストへ引き込んでしまうからです。
 
@@ -361,19 +364,33 @@ db_bytes=106.2 MB       wal_bytes=0
   `lcm_retrieval_debug` と `/lcm debug` は **Deprecated** です (「まだ実行されていない」としか
   答えられません)。さらにそのテレメトリはメモリ上のマップなので、有効にしても現在のプロセスを
   説明するだけで、再起動で失われます。
-- **保持ポリシーは既定の設定では何も削除しません。** `retention.staleSessionDays` は既定で無効で、
-  `/lcm retention apply` は閾値を受け取らず設定どおりに実行するだけ — つまり空操作です。実際に
-  削除できるのはツール `lcm_retention_prune` (`staleSessionDays` / `orphanBlobDays` を渡せます) です。
+- **保持ポリシーは既定の設定では何も削除しません。** `retention.staleSessionDays` は既定で無効なので、
+  閾値を渡さない `/lcm retention apply` は依然として空操作です。閾値はコマンド自身へ渡せるように
+  なり (`--staleSessionDays` / `--deletedSessionDays` / `--orphanBlobDays`)、ツール
+  `lcm_retention_prune` も同様にこれらを受け取ります。
 - **年齢による整理の前には必ず pin してください。** 古いかどうかはアーカイブの `updated` 列で
   判定され、**現在のツリーのルートセッションは更新されません** — 事前に `lcm_pin_session` しないと、
   自分の分岐ツリーのルートを消してしまい、セッション横断の呼び戻しが効かなくなります。
-- **blob GC の猶予期間は設定値のみを見ます。** `lcm_blob_gc` は `orphanBlobDays` の上書きを無視します
-  (0 を渡しても空操作で、新たに孤立した blob に印を付けて計時を始めるだけ。削除は後続の呼び出し)。
-  すぐに回収したい場合は `lcm_retention_prune` を使ってください。また 1 回あたり各種類 50 行が上限なので、
+- **blob GC の猶予期間のセマンティクス。** `lcm_blob_gc` と `/lcm gc` はどちらも `orphanBlobDays` を
+  受け取ります (`0` を渡すと猶予期間なし)。残る注意点は、**その呼び出しで初めて孤立として観測された**
+  バッチが `orphaned_at` のタイムスタンプを打たれるだけで、回収できるのは後続の呼び出しになることです。
+  しばらく観測されている孤立 blob はこの限りではありません。また 1 回あたり各種類 50 行が上限なので、
   数百件を消すには繰り返し呼ぶ必要があります。
 - **容量の大半はメッセージ行と FTS インデックスで、blob ではありません。** 実測で blob 3,700 個は
   合計約 14 MB、データベースは約 100 MB です。その領域をディスクへ返すのが
   `lcm_compact apply=true` (VACUUM) で、実測では 1 回で 12 MB を回収しました。
+
+## 予約済み: 1 会話につき 1 ディレクトリ
+
+私たちは上流に提案しました ([deepseek-ai/deepseek-harness #9713](https://github.com/deepseek-ai/deepseek-harness/discussions/9713)) — **1 つの会話が共有ワークスペースの中に自分のサブディレクトリを持つ**という案です。共有ルートに `AGENTS.md` と共通ファイルを置き、各会話は自分の領域にだけ書きます。
+
+これが実現するとこのプラグインは少し影響を受けるため、適応コードは先に書き、**コメントアウトしたまま**上流の判断を待っています:
+
+> **どこに:** `lib/store.js` の `worktreeKeyOf()` のすぐ下にある大きな `RESERVED FOR: one directory per conversation` ブロックです。
+
+**なぜ必要か:** `worktree` スコープの現在の意味は「cwd が同じすべてのセッション」です。各会話が独立した cwd を持つようになると、このスコープは現在のセッション 1 つだけになります — エラーにはなりませんが、`session → worktree → all` のはしごが**黙って消えます**。修正は「それを含む共有ワークスペースのルート」で分けることです — 1 つの共有 `AGENTS.md` がすべての会話を覆えるのと同じ動きです。
+
+**早く有効にしないでください:** 今日のモデル (1 ワークスペース = 1 cwd) では、共有ルートで分けると同じワークスペースを共有するすべてのセッションを 1 つの `worktree` スコープへ**併合して**しまい、目的と正反対になります。コメントには、変更が必要になる 3 つの呼び出し箇所と、なぜ今は有効にできないかが書かれています。
 
 ## 謝辞とライセンス
 

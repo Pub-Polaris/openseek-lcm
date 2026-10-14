@@ -175,11 +175,14 @@ command palette. Its output is shown to you and is not injected into the convers
 /lcm debug [Deprecated]                    diagnostics of the last automatic recall (off by default; see resume)
 /lcm pin [reason] | unpin                 protect this session from retention
 /lcm blobstats [n]                        artifact blob inventory
-/lcm gc [apply]                           preview or delete orphaned blobs
+/lcm gc [apply] [--orphanBlobDays n]      preview or delete orphaned blobs
 /lcm compact [apply]                      preview or reclaim database space
 /lcm doctor [apply]                       inspect or repair summaries and indexes
-/lcm retention [apply]                    preview or apply the retention policy
+/lcm retention [apply] [--staleSessionDays n] [--deletedSessionDays n] [--orphanBlobDays n]
+                                          preview or apply the retention policy
 ```
+
+Thresholds are passed straight through to the retention policy and override the profile config. This is required: `retention.staleSessionDays` is **disabled** in the shipped defaults, so an `apply` without a threshold clears nothing. Likewise `--orphanBlobDays 0` immediately collects orphaned blobs already past their grace period, while the batch first observed as orphaned during that call is only stamped and becomes collectable on the next call.
 
 `--scope all` stays available because the operator types it; the model-facing `lcm_grep` / `lcm_describe` tools refuse it by default, and only the operator setting `allowScopeAll: true` lets them through — one Harness home spans projects, so the model would otherwise pull another project's conversation into this context.
 
@@ -348,20 +351,33 @@ sequence 1007–1144.
   yet"). Their telemetry is also an in-memory map, so even when enabled it only describes the
   current process and is lost on restart.
 - **The retention policy prunes nothing as configured.** `retention.staleSessionDays` is
-  disabled by default and `/lcm retention apply` runs the policy as configured without accepting
-  a threshold — so it is a no-op. The tool `lcm_retention_prune` is the one that can pass
-  `staleSessionDays` / `orphanBlobDays` and actually clean.
+  disabled by default, so a threshold-less `/lcm retention apply` is still a no-op. Thresholds
+  can now be passed to the command itself (`--staleSessionDays` / `--deletedSessionDays` /
+  `--orphanBlobDays`), and the tool `lcm_retention_prune` accepts them too.
 - **Pin before any age-based cleanup.** Staleness is judged from the archive's `updated` column,
   and the **root session of the current tree is never updated** — so without a prior
   `lcm_pin_session` a cleanup deletes the root of your own branch tree and cross-session recall
   goes blind.
-- **Blob GC honours the configured grace only.** `lcm_blob_gc` ignores an `orphanBlobDays`
-  override (passing 0 is a no-op: it stamps newly orphaned blobs and starts the clock, and only a
-  later call can delete them); use `lcm_retention_prune` to reclaim them immediately. Each
-  category is also capped at 50 rows per call, so clearing hundreds takes repeated calls.
+- **Blob GC grace semantics.** Both `lcm_blob_gc` and `/lcm gc` accept `orphanBlobDays`
+  (passing `0` means no grace period). The remaining caveat is that a batch first observed as
+  orphaned during that call is only stamped with `orphaned_at` and becomes collectable on a later
+  call; orphans observed for a while already are unaffected. Each category is also capped at 50
+  rows per call, so clearing hundreds takes repeated calls.
 - **The bulk is message rows and the FTS index, not blobs.** Measured: 3,700 blobs total about
   14 MB, while the database is about 100 MB. Returning that space to disk is what
   `lcm_compact apply=true` (VACUUM) is for — 12 MB in a single measured pass.
+
+## Reserved: one directory per conversation
+
+We asked upstream ([deepseek-ai/deepseek-harness #9713](https://github.com/deepseek-ai/deepseek-harness/discussions/9713)) to **let a conversation own a subdirectory of a shared workspace** — the shared root holds `AGENTS.md` and the shared files, and each conversation writes only in its own.
+
+If that lands, this plugin is affected, so the adaptation is already written and **commented out**, waiting for upstream to settle it:
+
+> **Where:** the large `RESERVED FOR: one directory per conversation` block in `lib/store.js`, directly below `worktreeKeyOf()`.
+
+**Why it is needed:** the `worktree` scope currently means "every session with the same cwd". Once every conversation has its own cwd, that scope collapses to the current session alone — no error, but the `session → worktree → all` rung silently disappears. The fix is to key on the enclosing shared workspace root instead — the same move that lets one shared `AGENTS.md` cover every conversation.
+
+**Do not enable it early:** under today's model (one workspace = one cwd) keying on the shared root would merge every session sharing a workspace into a single `worktree` scope, which is the opposite of its purpose. The comment names the three call sites that would have to change, and why it cannot be switched on yet.
 
 ## Acknowledgements and licence
 

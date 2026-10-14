@@ -56,7 +56,7 @@
 
 ## 项目结构
 
-    dsh-plugin-lcm/
+    openseek-lcm/
     ├── index.js            # Host 插件入口：捕获、pre-step 召回、工具与命令注册、生命周期
     ├── lib/
     │   ├── store.js        # 归档存储与查询（捕获、grep/expand/artifact、摘要树、恢复、指针）
@@ -110,9 +110,21 @@
 
 1. **字符类覆盖不全 → 静默搜不到。** 只有 `[a-z0-9_]`、假名、CJK 基本区、兼容表意文字与谚文音节参与索引与子串扫描；emoji、全角拉丁/数字（`ＡＢＣ`、`１２３`）、半角片假名、CJK 扩展 B、谚文字母既不建索引也不可扫。查询它们会得到"没有找到"，与"确实不存在"无法区分，且不报错。
 2. **活会话永不回收。** 只有**整会话**可被清理，且没有任何自动调度（compact / gc / retention 全靠手动调用）。归档会随使用单调增长。
-3. **`retention.deletedSessionDays` 永不触发。** 两条会话保留规则都在查 `sessions.deleted = 1`，而**没有任何代码写入这一列**（只有快照导入会复制它）。`staleSessionDays` 默认禁用。因此文档里那套保留策略实际上不会因任何真实信号而生效。
+3. **`retention.deletedSessionDays` 永不触发。** `deletedSessionDays` 那条规则查 `sessions.deleted = 1`，而**没有任何代码写入这一列**（只有快照导入的 INSERT 会带上它，且 `ON CONFLICT` 分支并不更新它）。另一条 `staleSessionDays` 查的是 `pinned = 0 AND updated_at < cutoff`，与 `deleted` 无关，但**默认禁用**。因此文档里那套保留策略实际上不会因任何真实信号而生效。
 4. **`lib/text.js` 的 `sanitizeFtsTokens` 与 `FTS5_RESERVED` 是死代码。** 因为查询表达式只发出带引号的短语，二者永远不会被用到。
 5. **`orphanBlobDays: 0` 并不能"立刻回收本次才发现的那批孤儿"。** `gcBlobs` 在进入时就取好 cutoff，之后才给新观察到的孤儿打 `orphaned_at`，所以这一批要下一次调用才会被收。对"已经观察过一段时间的孤儿"宽限期语义是正确的，只有"本次第一次发现"的那一批会晚一轮。修法是把 cutoff 移到打戳之后，但那会改变现有测试的时序假设，故留作已知行为而非缺陷。
+
+---
+
+## 最近修复（2026-10-15，与仓库改名同期）
+
+**已修的问题不写进上面的"已知未修问题"，但也别让下一个 agent 重新怀疑它们。**
+
+- **搜索行与主行的 `session_id` 曾会分叉（真 bug）。** `captureMessage` / `insertArtifact`（`lib/store.js`）的 upsert 在冲突时**故意保留主行原来的 `session_id`**（一条消息属于首次捕获它的会话，fork 重新捕获不得把它搬走），但搜索行过去按**当前捕获方**写入。按会话删除于是只匹配到一边：`DELETE FROM messages WHERE session_id = ?` 删掉主行，而 `DELETE FROM message_fts WHERE session_id = ?` 找不到可删的行，留下一行 `lcm_grep` 仍能搜出来的内容。线上归档实测：**174 行孤儿 `message_fts`、408 行孤儿 `artifact_fts`**。修法是 upsert 之后**回读主行真实 owner**，搜索行按 owner 写。回归测试：`a re-captured message indexes under the session that owns it`。**修复只防新增；线上那 174/408 行仍在，要跑 `/lcm doctor apply`（工具侧 `lcm_doctor` + `apply: true`）**（重建索引时先清空 `message_fts` / `summary_fts` / `artifact_fts`，孤儿随之消失）。
+- **`doctor` 现在报 `fts_rows_without_base corpus=<key> count=N`，并把孤儿计入"需要修复"。** 只比 FTS/主表行数会漏：一行孤儿正好被一行未建索引的主行抵消时，两个计数相等而 `lcm_grep` 照样返回已删除的内容。测试：`doctor reports and repairs search rows with no base row`。
+- **`/lcm retention` 与 `/lcm gc` 现在接受阈值参数**（`--staleSessionDays` / `--deletedSessionDays` / `--orphanBlobDays`）。此前 `/lcm retention` 只能用配置里的值，而默认 `staleSessionDays` 禁用，于是 `apply` 是空操作；`lcm_blob_gc` 也补上了 `orphanBlobDays` 声明并转发给 `gcBlobs`，不再只有 `lcm_retention_prune` 能覆盖宽限期。
+- **`lib/store.js` 里 `worktreeKeyOf()` 正下方有一整块 RESERVED 注释代码**（"one directory per conversation"），指向上游讨论 deepseek-ai/deepseek-harness#9713。那是给未来上游布局变化预留的适配，**现在不要启用**；README（写给人看的那份）有对应章节。
+- **改名只动代码 checkout。** 归档默认路径仍是 `~\.dsh\storages\dsh-plugin-lcm\`（`lib/config.js` 里硬编码的 `storeDir` 默认值），bundle id 仍是 `@local/dsh-plugin-lcm`（`package.json` / `lib/commands.js` / `cordis.patch.yml`）—— 这两处**不是**过期引用，别顺手改。
 
 ---
 
