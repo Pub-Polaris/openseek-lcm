@@ -124,7 +124,7 @@
 - **`doctor` 现在报 `fts_rows_without_base corpus=<key> count=N`，并把孤儿计入"需要修复"。** 只比 FTS/主表行数会漏：一行孤儿正好被一行未建索引的主行抵消时，两个计数相等而 `lcm_grep` 照样返回已删除的内容。测试：`doctor reports and repairs search rows with no base row`。
 - **`/lcm retention` 与 `/lcm gc` 现在接受阈值参数**（`--staleSessionDays` / `--deletedSessionDays` / `--orphanBlobDays`）。此前 `/lcm retention` 只能用配置里的值，而默认 `staleSessionDays` 禁用，于是 `apply` 是空操作；`lcm_blob_gc` 也补上了 `orphanBlobDays` 声明并转发给 `gcBlobs`，不再只有 `lcm_retention_prune` 能覆盖宽限期。
 - **`lib/store.js` 里 `worktreeKeyOf()` 正下方有一整块 RESERVED 注释代码**（"one directory per conversation"），指向上游讨论 deepseek-ai/deepseek-harness#9713。那是给未来上游布局变化预留的适配，**现在不要启用**；README（写给人看的那份）有对应章节。
-- **改名只动代码 checkout。** 归档默认路径仍是 `~\.dsh\storages\dsh-plugin-lcm\`（`lib/config.js` 里硬编码的 `storeDir` 默认值），bundle id 仍是 `@local/dsh-plugin-lcm`（`package.json` / `lib/commands.js` / `cordis.patch.yml`）—— 这两处**不是**过期引用，别顺手改。
+- **改名只动代码 checkout。** 归档默认路径仍是 `~\.dsh\storages\dsh-plugin-lcm\`（`lib/config.js` 里硬编码的 `storeDir` 默认值）—— 那是**归档目录**，不是 bundle id，**保持原样、别顺手改**（改了会让线上约 125 MB 的归档变成孤儿）。bundle id 已随仓库目录一起改名为 `openseek-lcm`，所以 `package.json` / `lib/commands.js` / `cordis.patch.yml` 现在都写 `openseek-lcm`。
 
 ---
 

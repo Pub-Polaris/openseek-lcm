@@ -92,7 +92,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 
 `target` は pnpm がインストールできるものなら何でも受け付けます — 上記のようなローカル
 ディレクトリ、git URL、tarball、あるいは npm 名です。組み立てられる行の名前は
-`@local/dsh-plugin-lcm` ですが、これは bundle id にすぎず、リポジトリは `openseek-lcm` です。
+`openseek-lcm` で、リポジトリ名と同じです。
 
 > **Windows のパスに関する注意。** **ドライブレター**のパスからインストールしてください。
 > pnpm は `\\server\share` 形式の target を壊れた相対シンボリックリンクに書き換えてしまい、

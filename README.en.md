@@ -88,8 +88,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 ```
 
 `target` accepts anything pnpm can install — a local directory (as above), a git URL, a tarball,
-or an npm name. The composed row is named `@local/dsh-plugin-lcm`; that is only a bundle id, and
-the repository is `openseek-lcm`.
+or an npm name. The composed row is named `openseek-lcm`, the same as the repository.
 
 > **Windows path caveat.** Install from a **drive-letter** path. pnpm rewrites a `\\server\share`
 > target into a broken relative symlink, and activation then fails with

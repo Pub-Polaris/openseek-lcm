@@ -7,7 +7,7 @@
 # key is absent. Delete a key rather than setting it to an empty value.
 - insert:
     - id: lcm
-      name: '@local/dsh-plugin-lcm'
+      name: 'openseek-lcm'
       config:
         # Archive location. Deliberately unset: the plugin defaults to
         # <DSH_HOME>/storages/dsh-plugin-lcm — DSH's own plugin-data area,
