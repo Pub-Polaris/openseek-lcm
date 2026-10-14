@@ -140,6 +140,27 @@ git commit ; git push origin dev
 
 ---
 
+## 待办：上游差异审计（A1，未开始）
+
+**范围已经查清，等用户给预算后再做**（要拉上游仓库 + 逐条比对，是花钱的调研）。
+
+上游 `Plutarch01/opencode-lcm` 停在 **`v0.15.1`（2026-08-21）**，我们是从更早的状态移植的。四条有内容的提交**没跟**：
+
+| 提交 | 日期 | 主题 |
+|---|---|---|
+| `112c007` | 07-26 | `feat: harden SQLite storage lifecycle` |
+| `574244e` | 08-21 | `fix: recover from live SQLite corruption` |
+| `d7d7361` | 08-21 | `feat: expand archive retrieval and harden lifecycle` |
+| `041c594` | 08-21 | `test: cover legacy store migrations` |
+
+（另外 `9014d6e` 是文档、`c1e7418` / `84103cc` 是 release 提交。）
+
+**按用户定的口径：只产出 A 类** —— "上游修了、我们没跟"。B 类（我们有意偏离）**不动**，那是兼容性 + 比上游更国际化的策略；C 类（上游有、我们没移植）**看情况**，由用户开新分支处理。
+
+**注意**：`recover from live SQLite corruption` 是针对 OpenCode 那种多进程写坏库的场景；本插件的归档是**派生缓存**且只被 DSH 一个进程打开。所以 A 类里预计会有一部分结论是"不适用" —— **那也是有价值的结论**，要写下来。
+
+---
+
 ## 版本与标签
 
 标签格式：`<两位年份>y-<E|M|L>-<阶段>`，例如 `26y-L-pre`。
