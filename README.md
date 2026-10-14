@@ -59,6 +59,10 @@ Harness 的会话日志本身就已经是一份无损的追加式记录，因此
 plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 ```
 
+> **已发布到 npm。** 包名就是 `openseek-lcm`，所以 `target` 直接写包名即可：
+> `plugin_manager { action: install_bundle, target: "openseek-lcm" }`
+> 新版本由本仓库的 GitHub Release 自动发布，不需要手动跑 `npm publish`。
+
 `target` 接受 pnpm 能安装的任何形式：本地目录（如上）、git URL、tarball，或 npm 包名。组合后的插件行名为 `openseek-lcm`，与仓库名一致。
 
 > **Windows 路径注意。** 请从**盘符路径**安装。pnpm 会把 `\\server\share` 形式的目标改写成一条损坏的相对符号链接，随后激活失败并报 *"cannot resolve profile bundle"*。请改用映射过的盘符或本地路径。

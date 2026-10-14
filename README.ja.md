@@ -90,6 +90,11 @@ Harness のセッションログはすでに可逆な追記専用の記録なの
 plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 ```
 
+> **npm に公開済みです。** パッケージ名が `openseek-lcm` なので、`target` にはそのまま名前を
+> 書けます：`plugin_manager { action: install_bundle, target: "openseek-lcm" }`
+> 新しいバージョンはこのリポジトリの GitHub Release から自動公開されます。手動の
+> `npm publish` は不要です。
+
 `target` は pnpm がインストールできるものなら何でも受け付けます — 上記のようなローカル
 ディレクトリ、git URL、tarball、あるいは npm 名です。組み立てられる行の名前は
 `openseek-lcm` で、リポジトリ名と同じです。

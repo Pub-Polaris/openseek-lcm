@@ -87,6 +87,11 @@ Harness itself already uses for session search.
 plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 ```
 
+> **Published to npm.** The package name is `openseek-lcm`, so `target` can be the name itself:
+> `plugin_manager { action: install_bundle, target: "openseek-lcm" }`
+> New versions are released automatically from this repository's GitHub Releases; there is no
+> manual `npm publish` step.
+
 `target` accepts anything pnpm can install — a local directory (as above), a git URL, a tarball,
 or an npm name. The composed row is named `openseek-lcm`, the same as the repository.
 

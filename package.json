@@ -1,6 +1,6 @@
 {
   "name": "openseek-lcm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Lossless Context Memory for DeepSeek Harness: archives older session context outside the active prompt and recalls what the current turn needs.",
   "license": "MIT",
