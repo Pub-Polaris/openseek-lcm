@@ -88,6 +88,58 @@
 
 ---
 
+## 分支与发布流程
+
+**`main` 只收发布。开发一律在 `dev` 分支上做。**
+
+```
+main       ← 只收发布（稳定、可发布）
+dev        ← 日常开发
+└─ polaris ← 尝鲜：新功能 / 破坏性更新 / 上游变化引发的修复
+```
+
+### 开工前先问用户功能落哪个分支
+
+**默认所有开发落 `dev`，不必每次确认。** 只有下列情况**必须先问用户**：
+
+- 会改发布流程或版本策略；
+- 会影响已发布版本的兼容性（破坏性变更）；
+- 需要 hotfix 直接进 `main`；
+- 属于 `polaris` 的范畴（见下）。
+
+**判断不了就问。** 拿不准时问一句，比猜错便宜。
+
+`polaris` 是 `dev` 下的尝鲜线，收三类东西：**新功能**、**破坏性更新**、**上游变更导致 openseek-lcm 出问题的修复**。它是分支不是发布通道 —— 从它出来的东西仍然要经 `dev` → `main` → Release 才能到 npm。
+
+### 别人的代码只能走 PR
+
+除用户本人外，任何人的改动**必须经 Pull Request** 合入，不得直接推送 `main`。
+
+> 现状：仓库目前只有用户一个作者、没有协作者，所以 `main` 尚未开分支保护 —— 等真有第二个人参与时再开。**发布侧已经锁死**：npm 的 trusted publisher 绑定到 `Pub-Polaris/openseek-lcm` + `publish.yml`，别人即使拿到 npm token 也推不上去。
+
+**日常开发**
+
+```powershell
+git switch dev
+# ...改代码...
+node test/smoke.mjs ; node test/recall.mjs ; node test/plugin.mjs
+git commit ; git push origin dev
+```
+
+**发版**
+
+1. 在 `dev` 上把 `package.json` 的 `version` 提到新版本号（**npm 版本号不可覆盖，必须比上一版大**），提交推送。
+2. `dev` → `main` 合并并推送（合并提交或 fast-forward 都行，但要保持 `main` 可发布）。
+3. 在 `main` 对应的提交上**发一个 GitHub Release** —— `.github/workflows/publish.yml` 由 `release: published` 触发，跑完三个套件才 `npm publish --provenance`。
+4. 发版后用**版本级 URL** 确认真的上去了（npm 有几分钟处理延迟，别当失败）：
+   `curl.exe -s -o NUL -w "%{http_code}" https://registry.npmjs.org/openseek-lcm/<ver>` → 200
+
+**为什么要用 Release 而不是 tag**：本仓库的 tag 格式（`26y-L-pre`）不是 semver，npm 不认。Release 是那个"发版按钮"。
+
+**发布只可能来自这个仓库的这个 workflow。** npm 侧的 trusted publisher 绑定了 `Pub-Polaris/openseek-lcm` + `publish.yml`，配了带 bypass-2FA 的 token 也推不上去 —— 所以在 CI 里发版不是建议，是唯一通路。
+
+---
+
 ## 版本与标签
 
 标签格式：`<两位年份>y-<E|M|L>-<阶段>`，例如 `26y-L-pre`。
