@@ -163,16 +163,23 @@ check('home directory resolution prefers env, then the profile layout, then ~/.d
     'C:/Users/someone/.dsh',
     'handles forward slashes',
   );
+  // The two fall-through cases compose the OS home with `path.join`, so the
+  // expectation has to be built the same way. Hardcoding the Windows separator
+  // made this check pass on Windows and fail everywhere else, which is exactly
+  // what the Linux CI runner reported.
   assert.equal(
     resolveHomeDir({
       env: {},
       cwd: 'C:\\Users\\someone\\.dsh\\profiles\\desktop\\nested',
       home: () => 'C:\\Users\\someone',
     }),
-    'C:\\Users\\someone\\.dsh',
+    path.join('C:\\Users\\someone', '.dsh'),
     'a deeper directory is not mistaken for the profile root and falls through to the OS default',
   );
-  assert.equal(resolveHomeDir({ env: {}, cwd: 'C:\\elsewhere', home: () => 'C:\\Users\\someone' }), 'C:\\Users\\someone\\.dsh');
+  assert.equal(
+    resolveHomeDir({ env: {}, cwd: 'C:\\elsewhere', home: () => 'C:\\Users\\someone' }),
+    path.join('C:\\Users\\someone', '.dsh'),
+  );
 });
 
 check('storeDir defaults into the DSH plugin-data area and an explicit storeDir wins', () => {
