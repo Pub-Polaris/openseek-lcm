@@ -1,0 +1,56 @@
+name: publish
+
+# Publishing to npm from CI, with no token and no interactive 2FA.
+#
+# npm's trusted publishing hands the workflow a short-lived OIDC identity, which
+# npm matches against the trusted publisher registered on the package. Nothing
+# secret is stored in this repository. See:
+#   https://docs.npmjs.com/trusted-publishers
+#
+# Why this exists at all: the account that owns this package has 2FA with a
+# device-bound passkey, and a passkey cannot produce the one-time password the
+# old token flow wants. Interactive `npm publish` still works; CI is how a
+# release gets out without a person present.
+#
+# To cut a release: bump "version" in package.json, push, then publish a GitHub
+# Release. npm versions are immutable, so the version must be new every time.
+
+on:
+  release:
+    types: [published]
+  # Manual escape hatch: run it from the Actions tab when a release was already
+  # published and only the npm side needs retrying.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for the OIDC exchange and for provenance
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs a recent npm; the one bundled with Node 22 is
+      # older than the OIDC support.
+      - name: Use the latest npm
+        run: npm install -g npm@latest
+
+      # This package has no runtime dependencies and no lockfile, so there is
+      # nothing to install and `npm ci` would fail on the missing lockfile.
+      - name: Run the test suites
+        run: |
+          node test/smoke.mjs
+          node test/recall.mjs
+          node test/plugin.mjs
+
+      # --provenance attaches a signed statement linking the tarball to this
+      # workflow run and commit.
+      - name: Publish
+        run: npm publish --provenance --access public
