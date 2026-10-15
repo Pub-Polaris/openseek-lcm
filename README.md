@@ -224,7 +224,9 @@ schema v2 → v3 的检索索引迁移是在该归档的一份副本上测量的
 
 > **在哪**：`lib/store.js` 里 `worktreeKeyOf()` 正下方那一大段 `RESERVED FOR: one directory per conversation`。
 
-**为什么要改**：`worktree` scope 现在的含义是"cwd 相同的所有会话"。一旦每个对话都有独立 cwd，这个 scope 就只会剩下当前会话一个 —— 不报错，但 `session → worktree → all` 这级阶梯会**静默地塌掉**。改法是按"包含它的那个共享工作区根"来分桶，跟"一份共享 `AGENTS.md` 能覆盖所有对话"是同一个动作。
+**为什么要改**：`worktree` scope 现在的含义是"cwd 相同的所有会话"。一旦每个对话都有独立 cwd，这个 scope 就只会剩下当前会话一个 —— 不报错，但 `session → worktree → all` 这级阶梯会**静默地塌掉**。改法是按"包含它的那个共享工作区根"来分桶。
+
+**注意这两件事不是同一个动作。** 让"一份共享 `AGENTS.md` 覆盖所有对话"**今天就能做到**：`@deepseek-ai/dsh-agent-instructions` 的 `projectRootMarkers` 是可配置的（默认 `['.git']`），在 profile 的 `cordis.patch.yml` 里把 `agent-instructions` 那行设成 `["AGENTS.md"]` 即可。上游那半缺的是**自动给每个对话分配子目录** —— 那才需要 DSH 自己动。
 
 **别提前开**：在今天的模型下（一个工作区 = 一个 cwd），按共享根分桶会把同一工作区里的所有会话**并成一个** `worktree` scope，正好和它的用途相反。注释里写了要动的三个调用点，以及为什么现在不能开。
 

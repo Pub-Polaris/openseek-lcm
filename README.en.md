@@ -379,7 +379,9 @@ If that lands, this plugin is affected, so the adaptation is already written and
 
 > **Where:** the large `RESERVED FOR: one directory per conversation` block in `lib/store.js`, directly below `worktreeKeyOf()`.
 
-**Why it is needed:** the `worktree` scope currently means "every session with the same cwd". Once every conversation has its own cwd, that scope collapses to the current session alone — no error, but the `session → worktree → all` rung silently disappears. The fix is to key on the enclosing shared workspace root instead — the same move that lets one shared `AGENTS.md` cover every conversation.
+**Why it is needed:** the `worktree` scope currently means "every session with the same cwd". Once every conversation has its own cwd, that scope collapses to the current session alone — no error, but the `session → worktree → all` rung silently disappears. The fix is to key on the enclosing shared workspace root instead.
+
+**These are not the same move.** Letting one shared `AGENTS.md` cover every conversation **works today**: `projectRootMarkers` on `@deepseek-ai/dsh-agent-instructions` is configurable (default `['.git']`), so setting the `agent-instructions` row to `["AGENTS.md"]` in the profile's `cordis.patch.yml` is enough. What upstream is missing is the other half — **giving every conversation its own subdirectory automatically** — and that is what needs DSH itself to change.
 
 **Do not enable it early:** under today's model (one workspace = one cwd) keying on the shared root would merge every session sharing a workspace into a single `worktree` scope, which is the opposite of its purpose. The comment names the three call sites that would have to change, and why it cannot be switched on yet.
 
