@@ -11,6 +11,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,7 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
+import { renderSource, readSource, switchSource } from '../lib/source.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
 import { buildFtsQuery, explodeForIndex, gramsOf, hashContent, runsOf, unindexableRuns } from '../lib/text.js';
@@ -854,6 +856,58 @@ check('removedSpanTail restores the newest removed messages verbatim and bounds 
     [],
     'a compaction without a span restores nothing rather than guessing',
   );
+});
+
+/**
+ * Source control for the checkout the plugin runs from.
+ *
+ * A local repository is used rather than the real one: this check must never move
+ * the working tree it is being run from.
+ */
+await checkAsync('source reads the checkout and refuses unsafe switches', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-source-'));
+  const git = (...args) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  git('init', '-q');
+  git('config', 'user.email', 'smoke@example.invalid');
+  git('config', 'user.name', 'smoke');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  git('add', 'a.txt');
+  git('commit', '-qm', 'first');
+  git('branch', 'dev');
+  git('branch', 'polaris');
+  const base = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+
+  const source = await readSource(repo);
+  assert.equal(source.ok, true, 'a checkout is readable');
+  assert.equal(source.branch, base);
+  assert.deepEqual(source.dirty, []);
+  assert.deepEqual(
+    source.branches.map((entry) => entry.name),
+    ['main', 'dev', 'polaris'],
+    'only the three release branches are offered',
+  );
+
+  const switched = await switchSource('polaris', repo);
+  assert.equal(switched.ok, true, 'a clean tree switches');
+  assert.equal(switched.changed, true);
+  assert.equal(switched.restartRequired, true, 'a switch never claims to be live');
+  assert.equal((await readSource(repo)).branch, 'polaris');
+
+  assert.equal((await switchSource('polaris', repo)).changed, false, 'already there is not a change');
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  const refused = await switchSource('dev', repo);
+  assert.equal(refused.ok, false, 'a dirty tree is refused');
+  assert.match(refused.reason, /uncommitted/);
+  assert.equal((await readSource(repo)).branch, 'polaris', 'the refusal left the branch alone');
+
+  const unknown = await switchSource('release-please', repo);
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.reason, /unknown-branch/);
+
+  assert.match(renderSource(await readSource(repo)), /\* polaris/);
+  fs.rmSync(repo, { recursive: true, force: true });
 });
 
 check('pins protect a session', () => {
