@@ -205,6 +205,10 @@ These are adaptations to real Harness semantics, not omissions.
    compaction injects one bounded compaction pointer giving the count of removed messages, the
    seq range, the token estimate and the exact way back (`lcm_expand` over the summary nodes in
    the span, or `lcm_grep --scope session`), with the resume note following in the same message.
+   **The tail of the removed span comes back verbatim too** — the newest
+   `resume.backfillMessages` messages inside `shadowedRange` (default 6, capped by
+   `resume.backfillChars`, default 1800 characters): the pointer only signposts, this is what
+   lets the model finish the sentence it was in the middle of.
    The pointer carries no archived content itself, is delivered exactly once per compaction, and
    does not depend on `automaticRetrieval.enabled` — a deterministic lookup, not a search.
    Similarity recall is the opt-in path and behaves exactly as before when enabled. The Harness
@@ -248,7 +252,11 @@ These are adaptations to real Harness semantics, not omissions.
    owns compaction and offers no hook to append to the summarization input, so instead of
    injecting into the compaction prompt the note is emitted, together with the compaction pointer,
    for the first turn after a `compaction/*` marker. The upstream outcome — important context
-   survives the shrink without overriding the compaction prompt — is preserved.
+   survives the shrink without overriding the compaction prompt — is preserved. **The note now
+   reports what the operator recently asked** (session title, the last three user turns, the
+   archived count and the newest message) instead of quoting a summary root: every fold keeps the
+   *leading* sentences (see `compressText`), so a root's text is always the beginning of the
+   session, and resuming from it drags the model back to where the conversation started.
 6. **`worktree` means "same working directory".** The Harness has no git-worktree concept, so
    the `worktree` scope is every session whose `cwd` matches. `root` is the branch tree derived
    from each session header's `parentSession` chain.

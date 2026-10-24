@@ -808,6 +808,54 @@ check('resume note is durable once written', () => {
   assert.match(store.resume(SESSION_ID), /updated_at=/);
 });
 
+check('the resume note reports recent operator turns, not the summary root head', () => {
+  const note = store.deriveResumeNote(SESSION_ID);
+  assert.ok(note, 'note derived');
+  // `compressText` keeps leading sentences and drops the tail, so a folded root's
+  // text is the beginning of the session. Quoting it made the note describe what
+  // the conversation started with instead of what it is doing now.
+  assert.doesNotMatch(note, /summary_roots=/, 'the root count is gone');
+  assert.doesNotMatch(note, /root L\d+ seq \d+-\d+:/, 'no root excerpt is quoted');
+  assert.match(note, /you asked at seq \d+:/, 'recent operator turns carry the note');
+  assert.ok(note.length < 1200, `note stays small, got ${note.length}`);
+});
+
+check('removedSpanTail restores the newest removed messages verbatim and bounds them', () => {
+  const pointer = store.latestCompaction(SESSION_ID);
+  assert.ok(pointer && pointer.seqs.length === 20, 'the recorded span is exposed');
+
+  const tail = store.removedSpanTail(SESSION_ID, { limit: 3, charBudget: 10_000 });
+  const newestInSpan = store.get(
+    'SELECT MAX(seq) AS n FROM messages WHERE session_id = ? AND deleted_at IS NULL AND seq <= 20',
+    SESSION_ID,
+  )?.n;
+  assert.ok(Number.isFinite(newestInSpan), 'the fixture has messages inside the span');
+  assert.equal(tail.length, 3, 'limit is honoured');
+  assert.equal(tail[tail.length - 1].seq, newestInSpan, 'the newest message inside the span comes last');
+  assert.deepEqual(
+    tail.map((entry) => entry.seq),
+    [...tail.map((entry) => entry.seq)].sort((a, b) => a - b),
+    'oldest first',
+  );
+  for (const entry of tail) {
+    assert.ok(entry.line.startsWith(`[seq ${entry.seq}] ${entry.role}: `), 'each line names its seq and role');
+    assert.ok(!entry.line.includes('\n'), 'one message stays one line');
+  }
+
+  // A char budget drops the oldest entries, never the newest: the message that was
+  // just cut off is the one the conversation needs to continue.
+  const tight = store.removedSpanTail(SESSION_ID, { limit: 6, charBudget: 60 });
+  assert.ok(tight.length < 6, 'the budget bites');
+  assert.equal(tight[tight.length - 1].seq, newestInSpan, 'the newest message survives a budget cut');
+
+  assert.deepEqual(store.removedSpanTail(SESSION_ID, { limit: 0, charBudget: 0 }), [], 'disabled by a zero bound');
+  assert.deepEqual(
+    store.removedSpanTail(NO_SPAN_ID, { limit: 3, charBudget: 1000 }),
+    [],
+    'a compaction without a span restores nothing rather than guessing',
+  );
+});
+
 check('pins protect a session', () => {
   assert.match(store.pinSession({ sessionId: SESSION_ID, reason: 'smoke test' }), /Pinned/);
   assert.equal(store.sessionRow(SESSION_ID).pinned, 1);
