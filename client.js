@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     const DICT = {
       en: {
-        title: 'Source',
+        title: 'openseek-lcm branches',
         hint: 'Which checkout this plugin runs from.',
         current: 'Current',
         restart: 'Switched. Restart DSH for it to take effect.',
@@ -29,7 +29,7 @@ window.__ModuleLoader__.load({
         uncommitted: 'uncommitted',
       },
       zh: {
-        title: '版本来源',
+        title: 'openseek-lcm版本分支',
         hint: '这个插件当前从哪份代码运行。',
         current: '当前',
         restart: '已切换。重启 DSH 后生效。',
@@ -69,8 +69,18 @@ window.__ModuleLoader__.load({
       return key;
     };
 
+    // Locale lookup can miss (an active locale whose fallback chain never reaches
+    // our registered tags); then the registry hands back the raw key. Fall back to
+    // the Chinese dictionary so the UI never shows `title` / `unavailable`.
+    const FALLBACK_DICT = DICT.zh;
+    function safeTranslate(key) {
+      const text = translate(key);
+      if (text !== key) return text;
+      return FALLBACK_DICT[key] || key;
+    }
+
     function SourcePage() {
-      const t = translate;
+      const t = safeTranslate;
       const [state, setState] = React.useState({ phase: 'loading' });
 
       async function reload() {
@@ -178,8 +188,19 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
       apply(ctx) {
         try {
-          ctx.locale.register(NS, 'en', DICT.en);
-          ctx.locale.register(NS, 'zh', DICT.zh);
+          // The shell's active locale is a BCP-47 tag (`zh-CN`, `en-US`, …);
+          // registering only the bare `zh`/`en` left `bind` with no match and the
+          // nav rendered the raw keys ("title"). Register the aliases too.
+          [
+            ['en', DICT.en],
+            ['en-US', DICT.en],
+            ['zh', DICT.zh],
+            ['zh-CN', DICT.zh],
+            ['zh-Hans', DICT.zh],
+            ['zh-Hans-CN', DICT.zh],
+          ].forEach(function (entry) {
+            ctx.locale.register(NS, entry[0], entry[1]);
+          });
           translate = ctx.locale.bind(NS);
         } catch {
           // The page still works with key-shaped text rather than failing to mount.
@@ -193,7 +214,7 @@ window.__ModuleLoader__.load({
                 id: 'openseek-lcm-source',
                 order: 70,
                 label: function () {
-                  return translate('title');
+                  return safeTranslate('title');
                 },
               },
               SourcePage,
