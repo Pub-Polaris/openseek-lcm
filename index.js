@@ -40,7 +40,24 @@ import { buildLcmCommand } from './lib/commands.js';
 import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
+import { readSource, switchSource } from './lib/source.js';
 import { buildTools } from './lib/tools.js';
+
+/** The one route the settings page talks to. */
+const SOURCE_ROUTE = '/openseek-lcm/source';
+
+/** Read a small JSON request body; anything larger is not our payload. */
+async function readJsonBody(request, limit = 4096) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) throw new Error('request body too large');
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  return text.length === 0 ? undefined : JSON.parse(text);
+}
 
 /** Cordis service names required for activation (verified against the live catalog). */
 export const inject = ['tools', 'systemPrompt', 'sessionQuery', 'agents'];
@@ -455,6 +472,53 @@ export function apply(ctx, config) {
     } catch (error) {
       noteFailure('register the /lcm command', error);
     }
+  }
+
+  // The settings page's only way to reach the Host. A client half cannot read the
+  // filesystem or run git, and this package's RPC face would need generated
+  // codecs, so the page talks to one package-private HTTP route instead: GET
+  // reports which checkout is running, POST moves it. An optional dependency, so
+  // a profile without a web server keeps every other surface.
+  try {
+    ctx.inject(['webServer'], (child) => {
+      child.effect(
+        () => {
+          // A host without a web server -- or a test double without one -- simply
+          // has no page to serve. That is a deployment shape, not a failure, so it
+          // must not raise a warning.
+          if (typeof child.webServer?.register !== 'function') return undefined;
+          const unregister = child.webServer.register({
+            kind: 'prefix',
+            path: SOURCE_ROUTE,
+            handler: async (request, response) => {
+              const reply = (status, payload) => {
+                response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+                response.end(JSON.stringify(payload));
+              };
+              try {
+                if (request.method === 'POST') {
+                  const branch = String((await readJsonBody(request))?.branch ?? '');
+                  const result = await switchSource(branch);
+                  reply(result.ok ? 200 : 409, result);
+                  return;
+                }
+                if (request.method !== 'GET' && request.method !== 'HEAD') {
+                  reply(405, { ok: false, reason: 'GET or POST only' });
+                  return;
+                }
+                reply(200, await readSource());
+              } catch (error) {
+                reply(500, { ok: false, reason: String(error?.message ?? error) });
+              }
+            },
+          });
+          return () => unregister();
+        },
+        'lcm source route',
+      );
+    });
+  } catch (error) {
+    noteFailure('register the source route', error);
   }
 
   // Lifecycle: flush buffered events, then close the database.

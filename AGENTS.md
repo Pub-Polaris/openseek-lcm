@@ -201,6 +201,14 @@ git commit ; git push origin dev
 
 ---
 
+## 最近修复（2026-10-25，polaris：resume 回来的是很久以前）
+
+- **resume note 报的是"会话开头"，不是"最近在做什么"（真 bug）。** `deriveResumeNote` 过去摘 `summary_nodes` 根节点的文本，而每层折叠只保留**开头**的整句（`compressText`，`lib/text.js`）—— 根节点文本因此永远是会话最早的内容，历史越长越跑偏。线上实测：L4 根覆盖 seq 3924–11511，note 里给的却是 seq 3924 那段。已改为**最近优先**：会话标题 + 最近三轮 `user` 消息 + 归档数 + 最新一条。
+- **新增 `removedSpanTail`：压缩后把被移除区间的尾部原文原样带回来。** 以前压缩后只给指针，模型得自己 `lcm_grep` 才能接上话。现在按 `shadowedRange` 取区间内最新 N 条消息（`resume.backfillMessages` 默认 6；`resume.backfillChars` 默认 1800 封顶），确定性查找、不走向量。**取消息必须按区间，不能按 `shadowedSeqs` 逐条** —— 那个列表里混着非消息事件（`turn/*`、`tool/call`），按 seq 取会少几条（这一点先在测试里踩到）。
+- **注入预算**：指针 300 字 + backfill 1800 字 + note 约 700 字，`resume.maxChars` 默认 3000 兜底。三段各自有界，所以兜底通常不会真截断。
+
+---
+
 ## 验收规范（本项目专用，来自真实事故）
 
 - **schema 迁移之后必须跑一次 `/lcm compact apply`，否则空间不会回到磁盘。** 迁移只是把页释放进 freelist：实测迁移后文件 95.6 MiB、freelist 32.1 MiB；执行 compact（prune → VACUUM → checkpoint）后为 56.9 MiB、freelist 0。

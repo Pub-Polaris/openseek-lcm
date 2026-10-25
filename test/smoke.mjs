@@ -11,6 +11,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,7 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
+import { renderSource, readSource, switchSource } from '../lib/source.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
 import { buildFtsQuery, explodeForIndex, gramsOf, hashContent, runsOf, unindexableRuns } from '../lib/text.js';
@@ -806,6 +808,106 @@ check('resume note is durable once written', () => {
   assert.ok(note && note.includes('LCM prototype resume note'));
   store.setResume(SESSION_ID, note);
   assert.match(store.resume(SESSION_ID), /updated_at=/);
+});
+
+check('the resume note reports recent operator turns, not the summary root head', () => {
+  const note = store.deriveResumeNote(SESSION_ID);
+  assert.ok(note, 'note derived');
+  // `compressText` keeps leading sentences and drops the tail, so a folded root's
+  // text is the beginning of the session. Quoting it made the note describe what
+  // the conversation started with instead of what it is doing now.
+  assert.doesNotMatch(note, /summary_roots=/, 'the root count is gone');
+  assert.doesNotMatch(note, /root L\d+ seq \d+-\d+:/, 'no root excerpt is quoted');
+  assert.match(note, /you asked at seq \d+:/, 'recent operator turns carry the note');
+  assert.ok(note.length < 1200, `note stays small, got ${note.length}`);
+});
+
+check('removedSpanTail restores the newest removed messages verbatim and bounds them', () => {
+  const pointer = store.latestCompaction(SESSION_ID);
+  assert.ok(pointer && pointer.seqs.length === 20, 'the recorded span is exposed');
+
+  const tail = store.removedSpanTail(SESSION_ID, { limit: 3, charBudget: 10_000 });
+  const newestInSpan = store.get(
+    'SELECT MAX(seq) AS n FROM messages WHERE session_id = ? AND deleted_at IS NULL AND seq <= 20',
+    SESSION_ID,
+  )?.n;
+  assert.ok(Number.isFinite(newestInSpan), 'the fixture has messages inside the span');
+  assert.equal(tail.length, 3, 'limit is honoured');
+  assert.equal(tail[tail.length - 1].seq, newestInSpan, 'the newest message inside the span comes last');
+  assert.deepEqual(
+    tail.map((entry) => entry.seq),
+    [...tail.map((entry) => entry.seq)].sort((a, b) => a - b),
+    'oldest first',
+  );
+  for (const entry of tail) {
+    assert.ok(entry.line.startsWith(`[seq ${entry.seq}] ${entry.role}: `), 'each line names its seq and role');
+    assert.ok(!entry.line.includes('\n'), 'one message stays one line');
+  }
+
+  // A char budget drops the oldest entries, never the newest: the message that was
+  // just cut off is the one the conversation needs to continue.
+  const tight = store.removedSpanTail(SESSION_ID, { limit: 6, charBudget: 60 });
+  assert.ok(tight.length < 6, 'the budget bites');
+  assert.equal(tight[tight.length - 1].seq, newestInSpan, 'the newest message survives a budget cut');
+
+  assert.deepEqual(store.removedSpanTail(SESSION_ID, { limit: 0, charBudget: 0 }), [], 'disabled by a zero bound');
+  assert.deepEqual(
+    store.removedSpanTail(NO_SPAN_ID, { limit: 3, charBudget: 1000 }),
+    [],
+    'a compaction without a span restores nothing rather than guessing',
+  );
+});
+
+/**
+ * Source control for the checkout the plugin runs from.
+ *
+ * A local repository is used rather than the real one: this check must never move
+ * the working tree it is being run from.
+ */
+await checkAsync('source reads the checkout and refuses unsafe switches', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-source-'));
+  const git = (...args) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  git('init', '-q');
+  git('config', 'user.email', 'smoke@example.invalid');
+  git('config', 'user.name', 'smoke');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  git('add', 'a.txt');
+  git('commit', '-qm', 'first');
+  git('branch', 'dev');
+  git('branch', 'polaris');
+  const base = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+
+  const source = await readSource(repo);
+  assert.equal(source.ok, true, 'a checkout is readable');
+  assert.equal(source.branch, base);
+  assert.deepEqual(source.dirty, []);
+  assert.deepEqual(
+    source.branches.map((entry) => entry.name),
+    ['main', 'dev', 'polaris'],
+    'only the three release branches are offered',
+  );
+
+  const switched = await switchSource('polaris', repo);
+  assert.equal(switched.ok, true, 'a clean tree switches');
+  assert.equal(switched.changed, true);
+  assert.equal(switched.restartRequired, true, 'a switch never claims to be live');
+  assert.equal((await readSource(repo)).branch, 'polaris');
+
+  assert.equal((await switchSource('polaris', repo)).changed, false, 'already there is not a change');
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  const refused = await switchSource('dev', repo);
+  assert.equal(refused.ok, false, 'a dirty tree is refused');
+  assert.match(refused.reason, /uncommitted/);
+  assert.equal((await readSource(repo)).branch, 'polaris', 'the refusal left the branch alone');
+
+  const unknown = await switchSource('release-please', repo);
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.reason, /unknown-branch/);
+
+  assert.match(renderSource(await readSource(repo)), /\* polaris/);
+  fs.rmSync(repo, { recursive: true, force: true });
 });
 
 check('pins protect a session', () => {

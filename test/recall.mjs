@@ -312,6 +312,13 @@ check('the first turn after a compaction injects a deterministic pointer', () =>
   assert.doesNotMatch(pointer, /LCM prototype resume note/, 'the note is a separate paragraph');
   assert.match(text, /LCM prototype resume note/, 'the resume note still rides the same message');
 
+  // The removed span's tail comes back verbatim. The pointer only signposts the
+  // archive, so without this a compaction leaves the model searching for words it
+  // was in the middle of.
+  assert.match(text, /the last \d+ messages the compaction removed, verbatim/, 'the tail is re-injected');
+  assert.match(text, /\[seq 4\] assistant: 好的，召回诊断已记录。/, 'the newest removed message is back, verbatim');
+  assert.match(text, /\[seq 1\] user: Please remember that/, 'and the oldest one inside the span');
+
   // ...and it is emitted regardless of the flag.
   const withFlag = turn(configOn, []);
   assert.match(withFlag.message.content[0].text.split('\n')[0], /compaction pointer/);

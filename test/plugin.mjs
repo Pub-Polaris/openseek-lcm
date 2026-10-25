@@ -291,7 +291,11 @@ await checkAsync('lcm_grep finds the archived phrase', async () => {
 // -------------------------------------------------------------- /lcm command
 
 await checkAsync('the /lcm command registers and answers its subcommands', async () => {
-  assert.deepEqual(ctx.host.injected, [['commands']], 'the command registry is an optional dependency');
+  assert.deepEqual(
+    ctx.host.injected,
+    [['commands'], ['webServer']],
+    'the command registry and the settings page route are optional dependencies',
+  );
   assert.equal(ctx.host.registeredCommands.length, 1, `registered ${ctx.host.registeredCommands.length} command(s)`);
   const command = ctx.host.registeredCommands[0];
   assert.equal(command.name, 'lcm');
