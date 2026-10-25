@@ -40,7 +40,16 @@ import { buildLcmCommand } from './lib/commands.js';
 import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
-import { gitHubSpec, readSource, SOURCE_BRANCHES, SOURCE_MODES, switchSource } from './lib/source.js';
+import {
+  gitHubSpec,
+  linkSpec,
+  readSource,
+  sameGitHubSpec,
+  sameLinkSpec,
+  SOURCE_BRANCHES,
+  SOURCE_MODES,
+  switchSource,
+} from './lib/source.js';
 import { buildTools } from './lib/tools.js';
 
 /** The one route the settings page talks to. */
@@ -515,7 +524,17 @@ export function apply(ctx, config) {
                 if (request.method === 'POST') {
                   const body = (await readJsonBody(request)) ?? {};
                   const branch = String(body.branch ?? '');
-                  if (String(body.mode ?? '') === 'github') {
+                  const requested = String(body.mode ?? '');
+                  const current = await readInstallSpec();
+
+                  if (requested === 'github') {
+                    // pnpm reports "nothing changed" as an ambiguous install, so an
+                    // already-installed spec has to be recognised here rather than
+                    // handed to the manager and shown as a failure.
+                    if (sameGitHubSpec(current, branch)) {
+                      reply(200, { ok: true, mode: 'github', branch, unchanged: true, spec: current });
+                      return;
+                    }
                     if (typeof manager?.installBundle !== 'function') {
                       reply(409, { ok: false, reason: 'the plugin manager is unavailable in this profile' });
                       return;
@@ -525,6 +544,18 @@ export function apply(ctx, config) {
                     reply(ok ? 200 : 409, { ok, mode: 'github', branch, change });
                     return;
                   }
+
+                  // Local mode: after a GitHub install the dependency no longer
+                  // points at this checkout, so switching its branch would move a
+                  // repository the profile is not running. Relink first.
+                  const local = await readSource();
+                  if (!sameLinkSpec(current) && local.ok && typeof manager?.installBundle === 'function') {
+                    const change = await manager.installBundle(linkSpec(), { enabled: true });
+                    const ok = change?.application !== 'failed' && change?.application !== 'cancelled';
+                    reply(ok ? 200 : 409, { ok, mode: 'local', branch, relinked: true, change });
+                    return;
+                  }
+
                   const result = await switchSource(branch);
                   reply(result.ok ? 200 : 409, { ...result, mode: 'local' });
                   return;
