@@ -22,21 +22,33 @@ window.__ModuleLoader__.load({
         title: 'openseek-lcm branches',
         hint: 'Which checkout this plugin runs from.',
         current: 'Current',
-        restart: 'Switched. Restart DSH for it to take effect.',
+        restart: 'Applied. Restart DSH for it to take effect.',
         loading: 'Reading the checkout…',
         unavailable: 'Not running from a checkout, so there is nothing to switch.',
-        failed: 'Could not switch.',
+        failed: 'Could not apply.',
         uncommitted: 'uncommitted',
+        source: 'Source',
+        localMode: 'Local checkout',
+        githubMode: 'GitHub branch',
+        localOnly: 'No local checkout here, so only the GitHub branch can be used.',
+        applying: 'Applying…',
+        installs: 'installs from',
       },
       zh: {
         title: 'openseek-lcm版本分支',
         hint: '这个插件当前从哪份代码运行。',
         current: '当前',
-        restart: '已切换。重启 DSH 后生效。',
+        restart: '已应用。重启 DSH 后生效。',
         loading: '正在读取检出…',
         unavailable: '不是在源码检出上运行，没有可切换的东西。',
-        failed: '切换失败。',
+        failed: '应用失败。',
         uncommitted: '项未提交',
+        source: '安装来源',
+        localMode: '本地仓库',
+        githubMode: 'GitHub 分支',
+        localOnly: '本机没有这个仓库的检出，只能用 GitHub 分支。',
+        applying: '正在应用…',
+        installs: '来源',
       },
     };
 
@@ -44,6 +56,18 @@ window.__ModuleLoader__.load({
       page: { display: 'grid', gap: 10, maxWidth: 560, paddingTop: 4 },
       hint: { margin: 0, opacity: 0.65, fontSize: 13 },
       now: { font: '13px ui-monospace, SFMono-Regular, Menlo, monospace' },
+      modes: { display: 'flex', gap: 6, flexWrap: 'wrap' },
+      mode: {
+        padding: '5px 10px',
+        borderRadius: 999,
+        border: '1px solid rgba(128,128,128,0.35)',
+        background: 'transparent',
+        color: 'inherit',
+        font: 'inherit',
+        fontSize: 12,
+        cursor: 'pointer',
+      },
+      modeActive: { borderColor: 'currentColor', fontWeight: 600 },
       list: { display: 'grid', gap: 6 },
       row: {
         display: 'grid',
@@ -105,7 +129,7 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      async function pick(branch) {
+      async function apply(mode, branch) {
         setState(function (previous) {
           return Object.assign({}, previous, { busy: branch, failure: null });
         });
@@ -113,22 +137,25 @@ window.__ModuleLoader__.load({
           const response = await fetch(ROUTE, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ branch: branch }),
+            body: JSON.stringify({ mode: mode, branch: branch }),
           });
           const result = await response.json();
           if (!result || result.ok !== true) {
             setState(function (previous) {
               return Object.assign({}, previous, {
                 busy: null,
-                failure: (result && result.reason) || t('failed'),
+                failure:
+                  (result && result.reason) ||
+                  (result && result.change && result.change.error && result.change.error.code) ||
+                  t('failed'),
               });
             });
             return;
           }
-          // The route reads the working tree live, so a reload already shows the
-          // branch the files were moved to.
+          // The route reads the checkout live, so a reload already reflects it; a
+          // GitHub install reports `restart-required` and the note covers that.
           const source = await reload();
-          setState({ phase: 'ready', source: source, busy: null, failure: null, switched: true });
+          setState({ phase: 'ready', source: source, busy: null, failure: null, applied: true, mode: mode });
         } catch (error) {
           setState(function (previous) {
             return Object.assign({}, previous, {
@@ -148,30 +175,66 @@ window.__ModuleLoader__.load({
 
       const source = state.source;
       const branches = Array.isArray(source.branches) ? source.branches : [];
+      const modes = Array.isArray(source.modes) ? source.modes : [];
       const dirty = Array.isArray(source.dirty) ? source.dirty.length : 0;
-      const status = `${t('current')}: ${source.branch} @ ${source.sha}${dirty > 0 ? ` · ${dirty} ${t('uncommitted')}` : ''}`;
+      const checkout = source.checkout === true;
+      const mode = state.mode || (source.mode === 'github' ? 'github' : 'local');
+      const where = checkout
+        ? `${source.branch} @ ${source.sha}${dirty > 0 ? ` · ${dirty} ${t('uncommitted')}` : ''}`
+        : String(source.spec || source.reason || '');
 
       return h(
         'div',
         { style: STYLE.page },
         h('h2', { style: { margin: 0, fontSize: 15 } }, t('title')),
         h('p', { style: STYLE.hint }, t('hint')),
-        h('div', { style: STYLE.now }, status),
+        h('div', { style: STYLE.now }, `${t('current')}: ${where}`),
+        source.spec ? h('p', { style: STYLE.hint }, `${t('installs')}: ${source.spec}`) : null,
+        h(
+          'div',
+          { style: STYLE.modes },
+          modes.map(function (entry) {
+            const selected = entry.id === mode;
+            const disabled = entry.id === 'local' && !checkout;
+            return h(
+              'button',
+              {
+                key: entry.id,
+                type: 'button',
+                disabled: disabled,
+                title: entry.summary,
+                style: Object.assign(
+                  {},
+                  STYLE.mode,
+                  selected ? STYLE.modeActive : null,
+                  disabled ? STYLE.rowBusy : null,
+                ),
+                onClick: function () {
+                  setState(function (previous) {
+                    return Object.assign({}, previous, { mode: entry.id, failure: null });
+                  });
+                },
+              },
+              entry.id === 'local' ? t('localMode') : t('githubMode'),
+            );
+          }),
+        ),
+        !checkout ? h('p', { style: STYLE.hint }, t('localOnly')) : null,
         h(
           'div',
           { style: STYLE.list },
           branches.map(function (entry) {
-            const active = entry.name === source.branch;
+            const active = checkout && entry.name === source.branch;
             const busy = state.busy === entry.name;
             return h(
               'button',
               {
                 key: entry.name,
                 type: 'button',
-                disabled: active || busy,
+                disabled: busy,
                 style: Object.assign({}, STYLE.row, active ? STYLE.rowActive : null, busy ? STYLE.rowBusy : null),
                 onClick: function () {
-                  pick(entry.name);
+                  apply(mode, entry.name);
                 },
               },
               h('span', { style: STYLE.name }, active ? `${entry.name}  ✓` : entry.name),
@@ -179,7 +242,8 @@ window.__ModuleLoader__.load({
             );
           }),
         ),
-        state.switched ? h('p', { style: STYLE.note }, t('restart')) : null,
+        state.busy ? h('p', { style: STYLE.note }, t('applying')) : null,
+        state.applied ? h('p', { style: STYLE.note }, t('restart')) : null,
         state.failure ? h('p', { style: STYLE.failure }, state.failure) : null,
       );
     }
