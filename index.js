@@ -40,7 +40,16 @@ import { buildLcmCommand } from './lib/commands.js';
 import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
-import { readSource, switchSource } from './lib/source.js';
+import {
+  gitHubSpec,
+  linkSpec,
+  readSource,
+  sameGitHubSpec,
+  sameLinkSpec,
+  SOURCE_BRANCHES,
+  SOURCE_MODES,
+  switchSource,
+} from './lib/source.js';
 import { buildTools } from './lib/tools.js';
 
 /** The one route the settings page talks to. */
@@ -495,18 +504,86 @@ export function apply(ctx, config) {
                 response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
                 response.end(JSON.stringify(payload));
               };
+              // Optional access: a profile without the plugin manager still reports
+              // the local checkout, it just cannot offer the GitHub install mode.
+              const manager = typeof ctx.get === 'function' ? ctx.get('pluginManager') : undefined;
+              const readInstallSpec = async () => {
+                if (typeof manager?.listBundles !== 'function') return undefined;
+                try {
+                  const bundles = await manager.listBundles();
+                  const mine = Array.isArray(bundles)
+                    ? bundles.find((entry) => entry?.name === 'openseek-lcm')
+                    : undefined;
+                  return mine?.installTarget?.spec ?? mine?.source;
+                } catch {
+                  return undefined;
+                }
+              };
+
               try {
                 if (request.method === 'POST') {
-                  const branch = String((await readJsonBody(request))?.branch ?? '');
+                  const body = (await readJsonBody(request)) ?? {};
+                  const branch = String(body.branch ?? '');
+                  const requested = String(body.mode ?? '');
+                  const current = await readInstallSpec();
+
+                  if (requested === 'github') {
+                    // pnpm reports "nothing changed" as an ambiguous install, so an
+                    // already-installed spec has to be recognised here rather than
+                    // handed to the manager and shown as a failure.
+                    if (sameGitHubSpec(current, branch)) {
+                      reply(200, { ok: true, mode: 'github', branch, unchanged: true, spec: current });
+                      return;
+                    }
+                    if (typeof manager?.installBundle !== 'function') {
+                      reply(409, { ok: false, reason: 'the plugin manager is unavailable in this profile' });
+                      return;
+                    }
+                    const change = await manager.installBundle(gitHubSpec(branch), { enabled: true });
+                    const ok = change?.application !== 'failed' && change?.application !== 'cancelled';
+                    reply(ok ? 200 : 409, { ok, mode: 'github', branch, change });
+                    return;
+                  }
+
+                  // Local mode: after a GitHub install the dependency no longer
+                  // points at this checkout, so switching its branch would move a
+                  // repository the profile is not running. Relink first.
+                  const local = await readSource();
+                  if (!sameLinkSpec(current) && local.ok && typeof manager?.installBundle === 'function') {
+                    const change = await manager.installBundle(linkSpec(), { enabled: true });
+                    const ok = change?.application !== 'failed' && change?.application !== 'cancelled';
+                    reply(ok ? 200 : 409, { ok, mode: 'local', branch, relinked: true, change });
+                    return;
+                  }
+
                   const result = await switchSource(branch);
-                  reply(result.ok ? 200 : 409, result);
+                  reply(result.ok ? 200 : 409, { ...result, mode: 'local' });
                   return;
                 }
                 if (request.method !== 'GET' && request.method !== 'HEAD') {
                   reply(405, { ok: false, reason: 'GET or POST only' });
                   return;
                 }
-                reply(200, await readSource());
+                const spec = await readInstallSpec();
+                const mode =
+                  typeof spec === 'string' && spec.includes('github:')
+                    ? 'github'
+                    : typeof spec === 'string'
+                      ? 'local'
+                      : 'unknown';
+                const local = await readSource();
+                reply(200, {
+                  ok: true,
+                  spec,
+                  mode,
+                  checkout: local.ok,
+                  branch: local.ok ? local.branch : undefined,
+                  sha: local.ok ? local.sha : undefined,
+                  dirty: local.ok ? local.dirty : [],
+                  reason: local.ok ? undefined : local.reason,
+                  branches: SOURCE_BRANCHES,
+                  modes: SOURCE_MODES,
+                });
               } catch (error) {
                 reply(500, { ok: false, reason: String(error?.message ?? error) });
               }
