@@ -90,6 +90,10 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 | `summary.minMessagesForTransform` | `16` | 构建摘要树前所需的已归档消息数。 |
 | `summary.levelSize` | `6` | 折叠进一个父节点的子节点数。 |
 | `summary.summaryCharBudget` | `1500` | 单个摘要节点的字符预算。 |
+| `resume.backfillEnabled` | `true` | 压缩后是否把被移除区间的尾部原文塞回上下文。 |
+| `resume.backfillMessages` | `6` | 最多回填多少条被移除的消息（从最新的往前数）。 |
+| `resume.backfillChars` | `1800` | 回填文本的字符上限。 |
+| `resume.maxChars` | `3000` | 压缩后那一轮的注入总上限（指针＋回填＋备忘）。 |
 | `systemHint` / `systemHintOrder` | `true` / `9000` | 告诉模型归档存在的提示词小节。 |
 | `tools.enabled` | `true` | 是否注册 `lcm_*` 工具套件。 |
 | `tools.expose` | — | 工具名白名单，用于削减每次请求的 schema token。 |
@@ -143,6 +147,7 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 /lcm doctor [apply]                       体检或修复摘要与索引
 /lcm retention [apply] [--staleSessionDays n] [--deletedSessionDays n] [--orphanBlobDays n]
                                           预览或执行保留策略
+/lcm source [branch]                      查看或切换插件跑的是哪份代码
 ```
 
 阈值参数直接传给保留策略，覆盖 profile 里的配置。这条是必须的：随附默认值里 `retention.staleSessionDays` 是**禁用**的，不传阈值的 `apply` 实际上什么都不清。同理 `--orphanBlobDays 0` 能立刻回收已过宽限期的孤儿 blob（本次首次观察到的那一批只会被打上时间戳，下一次调用才可回收）。
@@ -150,6 +155,19 @@ plugin_manager { action: install_bundle, target: "D:\\src\\openseek-lcm" }
 `--scope all` 仍然可用，因为它由操作者亲自输入；面向模型的 `lcm_grep` / `lcm_describe` 默认拒绝它，只有操作者设置 `allowScopeAll: true` 才会放行 —— 一个 Harness home 横跨多个项目，否则模型会把其它项目的对话拉进当前上下文。
 
 与其它地方一致，会改数据的子命令除非显式传 `apply`，否则只做预览。该命令通过可选依赖注册，因此一个没有命令注册表的 profile 仍然保有归档、压缩指针和面向模型的工具。命令输出在设计上只给人看 —— 它渲染在 UI 里，永远不会变成模型消息。
+
+## 版本来源：哪一份代码在跑
+
+跑的是哪份代码，由 profile 里这一行的 spec 决定：`link:<仓库>` 指本地检出，`git+https://…#<branch>` 指某次从 GitHub 装下来的副本。两者都能用，但**改代码只在 `link:` 下生效**。
+
+- **本地仓库模式**：先 `git fetch origin <branch>`，再 `git switch -C <branch> origin/<branch>`；已经在该分支上时改用 `git merge --ff-only`。秒级、可离线，改完就能测。fetch 失败（离线，或克隆没有远端）不算错误，退化成"用本地这一份"，结果里会标出来。
+- **GitHub 模式**：调插件管理器 `installBundle('github:Pub-Polaris/openseek-lcm#<branch>')`，由 pnpm 装该分支最新。适合没有本地克隆的机器；代价是每次切换要联网重装，并改动 profile 的 `package.json` 与 lockfile。
+
+两个入口：`/lcm source`（只看）与 `/lcm source <branch>`（切换），以及**设置 → 插件 → openseek-lcm版本分支**那一页 —— 页面上有模式开关和三个分支，各配一句说明。
+
+三条分支的取向：`main` 只收发布；`dev` 日常开发，可能带破坏性更新；`polaris` 是尝鲜线，随时会被移除。
+
+**切换后必须重启 DSH。** Cordis 加载器保留它首次导入的模块代际 —— 文件换了不等于正在跑的代码换了。
 
 ## 与 opencode-lcm 的有意差异
 

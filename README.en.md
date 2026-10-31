@@ -127,6 +127,10 @@ shows only the keys most deployments actually set.
 | `summary.minMessagesForTransform` | `16` | Archived messages required before a summary tree is built. |
 | `summary.levelSize` | `6` | Children folded into one parent. |
 | `summary.summaryCharBudget` | `1500` | Character budget per summary node. |
+| `resume.backfillEnabled` | `true` | Re-inject the removed span's tail verbatim after a compaction. |
+| `resume.backfillMessages` | `6` | Most removed messages to restore, counted from the newest. |
+| `resume.backfillChars` | `1800` | Character ceiling for the restored text. |
+| `resume.maxChars` | `3000` | Total ceiling for that post-compaction turn (pointer + backfill + note). |
 | `systemHint` / `systemHintOrder` | `true` / `9000` | The prompt section that tells the model the archive exists. |
 | `tools.enabled` | `true` | Register the `lcm_*` suite. |
 | `tools.expose` | — | Allow-list of tool names, to cut per-request schema tokens. |
@@ -184,6 +188,7 @@ command palette. Its output is shown to you and is not injected into the convers
 /lcm doctor [apply]                       inspect or repair summaries and indexes
 /lcm retention [apply] [--staleSessionDays n] [--deletedSessionDays n] [--orphanBlobDays n]
                                           preview or apply the retention policy
+/lcm source [branch]                      show, or switch, which copy the plugin runs
 ```
 
 Thresholds are passed straight through to the retention policy and override the profile config. This is required: `retention.staleSessionDays` is **disabled** in the shipped defaults, so an `apply` without a threshold clears nothing. Likewise `--orphanBlobDays 0` immediately collects orphaned blobs already past their grace period, while the batch first observed as orphaned during that call is only stamped and becomes collectable on the next call.
@@ -194,6 +199,30 @@ As everywhere else, the mutating subcommands are preview-only unless you pass `a
 The command is registered through an optional dependency, so a profile without the command
 registry keeps the archive, the compaction pointer and the model-facing tools. Command output is
 human-only by design — it is rendered in the UI and never becomes a model message.
+
+## Which copy is running
+
+The code that runs is whatever the profile's dependency line names: `link:<repository>` for a local
+checkout, `git+https://…#<branch>` for a copy installed from GitHub. Both work, but **editing code
+only takes effect under `link:`**.
+
+- **Local checkout mode** runs `git fetch origin <branch>` and then `git switch -C <branch>
+  origin/<branch>`; when the tree is already on that branch it runs `git merge --ff-only`. Seconds,
+  works offline, and the edit is immediately testable. A failed fetch (offline, or a clone with no
+  remote) is not an error — it degrades to the branch as it stands and says so in the result.
+- **GitHub mode** calls the plugin manager's `installBundle('github:Pub-Polaris/openseek-lcm#<branch>')`
+  and lets pnpm install that branch. It is the option for a machine with no local clone, and it costs
+  a network install and a `package.json`/lockfile change per switch.
+
+Two entry points: `/lcm source` (read) and `/lcm source <branch>` (switch), plus the
+**Settings → Plugins → openseek-lcm branches** page, which carries the mode toggle and the three
+branches with a one-line description each.
+
+What the branches are for: `main` receives releases only; `dev` is daily work and may carry breaking
+changes; `polaris` is the experimental line and may be removed at any time.
+
+**A switch needs a DSH restart.** The Cordis loader keeps the module generation it first imported —
+replacing files is not the same as replacing the code that is running.
 
 ## Deliberate differences from opencode-lcm
 

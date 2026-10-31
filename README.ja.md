@@ -132,6 +132,10 @@ Cordis ローダーは最初にインポートしたモジュール世代を保�
 | `summary.minMessagesForTransform` | `16` | 要約ツリーを構築する前に必要なアーカイブ済みメッセージ数。 |
 | `summary.levelSize` | `6` | 1 つの親へ畳み込む子の数。 |
 | `summary.summaryCharBudget` | `1500` | 要約ノードあたりの文字バジェット。 |
+| `resume.backfillEnabled` | `true` | コンパクション後に取り除かれた範囲の末尾をそのまま戻す。 |
+| `resume.backfillMessages` | `6` | 復元する件数の上限（新しいものから数える）。 |
+| `resume.backfillChars` | `1800` | 復元テキストの文字上限。 |
+| `resume.maxChars` | `3000` | コンパクション直後のターンの注入総量（ポインタ＋復元＋ノート）。 |
 | `systemHint` / `systemHintOrder` | `true` / `9000` | アーカイブの存在をモデルに伝えるプロンプトセクション。 |
 | `tools.enabled` | `true` | `lcm_*` スイートを登録する。 |
 | `tools.expose` | — | ツール名の許可リスト。リクエストごとのスキーマトークンを削減する。 |
@@ -190,6 +194,7 @@ Cordis ローダーは最初にインポートしたモジュール世代を保�
 /lcm doctor [apply]                       inspect or repair summaries and indexes
 /lcm retention [apply] [--staleSessionDays n] [--deletedSessionDays n] [--orphanBlobDays n]
                                           preview or apply the retention policy
+/lcm source [branch]                      show, or switch, which copy the plugin runs
 ```
 
 閾値は保持ポリシーへそのまま渡され、プロファイルの設定を上書きします。これは必須です。同梱の既定値では `retention.staleSessionDays` が**無効**なので、閾値を渡さない `apply` は実際には何も削除しません。同様に `--orphanBlobDays 0` は、猶予期間を過ぎた孤立 blob を即座に回収します (その呼び出しで初めて孤立として観測されたバッチはタイムスタンプを打たれるだけで、回収可能になるのは次の呼び出しです)。
@@ -200,6 +205,32 @@ Cordis ローダーは最初にインポートしたモジュール世代を保�
 このコマンドは任意依存として登録されるので、コマンドレジストリを持たないプロファイルでも
 アーカイブ、コンパクションポインタ、モデル向けツールはそのまま使えます。コマンド出力は設計上
 人間専用です — UI に描画され、モデルのメッセージになることはありません。
+
+## どちらのコピーが動いているか
+
+実際に動くコードは、プロファイルの依存行が指すものです: `link:<リポジトリ>` はローカルの
+チェックアウト、`git+https://…#<ブランチ>` は GitHub から入れたコピーです。どちらも動きますが、
+**コードの変更が効くのは `link:` のときだけ**です。
+
+- **ローカルチェックアウトモード**は `git fetch origin <ブランチ>` のあと
+  `git switch -C <ブランチ> origin/<ブランチ>` を実行し、既にそのブランチにいるときは
+  `git merge --ff-only` を使います。数秒で終わり、オフラインでも動き、変更はすぐ試せます。
+  fetch の失敗 (オフライン、またはリモートのないクローン) はエラーではなく、そのままの
+  ブランチを使う形に縮退し、結果にもそう出ます。
+- **GitHub モード**はプラグインマネージャの
+  `installBundle('github:Pub-Polaris/openseek-lcm#<ブランチ>')` を呼び、pnpm にそのブランチを
+  入れさせます。ローカルクローンのない機械向けの選択肢で、切り替えのたびにネットワーク
+  インストールと `package.json` / lockfile の変更を伴います。
+
+入口は 2 つ: `/lcm source` (表示) と `/lcm source <ブランチ>` (切り替え)、そして
+**設定 → プラグイン → openseek-lcmのバージョン**のページ (モード切替と 3 ブランチ、
+それぞれ 1 行の説明つき) です。
+
+ブランチの位置づけ: `main` はリリースのみ、`dev` は日常開発で破壊的変更を含むことがあり、
+`polaris` は実験用の系列でいつ削除されてもおかしくありません。
+
+**切り替えには DSH の再起動が必要です。** Cordis ローダーは最初にインポートしたモジュール
+世代を保持し続けるので、ファイルを差し替えても動いているコードは変わりません。
 
 ## 意図的な差分（opencode-lcm との）
 
