@@ -514,16 +514,16 @@ export function apply(ctx, config) {
               // Optional access: a profile without the plugin manager still reports
               // the local checkout, it just cannot offer the GitHub install mode.
               const manager = typeof ctx.get === 'function' ? ctx.get('pluginManager') : undefined;
-              const readInstallSpec = async () => {
-                if (typeof manager?.listBundles !== 'function') return undefined;
+              const readInstall = async () => {
+                if (typeof manager?.listBundles !== 'function') return { spec: undefined, version: undefined };
                 try {
                   const bundles = await manager.listBundles();
                   const mine = Array.isArray(bundles)
                     ? bundles.find((entry) => entry?.name === 'openseek-lcm')
                     : undefined;
-                  return mine?.installTarget?.spec ?? mine?.source;
+                  return { spec: mine?.installTarget?.spec ?? mine?.source, version: mine?.version };
                 } catch {
-                  return undefined;
+                  return { spec: undefined, version: undefined };
                 }
               };
 
@@ -532,7 +532,7 @@ export function apply(ctx, config) {
                   const body = (await readJsonBody(request)) ?? {};
                   const branch = String(body.branch ?? '');
                   const requested = String(body.mode ?? '');
-                  const current = await readInstallSpec();
+                  const { spec: current } = await readInstall();
 
                   if (requested === 'github') {
                     // pnpm reports "nothing changed" as an ambiguous install, so an
@@ -571,7 +571,7 @@ export function apply(ctx, config) {
                   reply(405, { ok: false, reason: 'GET or POST only' });
                   return;
                 }
-                const spec = await readInstallSpec();
+                const { spec, version } = await readInstall();
                 const mode =
                   typeof spec === 'string' && spec.includes('github:')
                     ? 'github'
@@ -582,6 +582,7 @@ export function apply(ctx, config) {
                 reply(200, {
                   ok: true,
                   spec,
+                  version,
                   mode,
                   checkout: local.ok,
                   branch: local.ok ? local.branch : undefined,
