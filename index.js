@@ -46,6 +46,7 @@ import {
   readSource,
   sameGitHubSpec,
   sameLinkSpec,
+  sourceRequestGuard,
   SOURCE_BRANCHES,
   SOURCE_MODES,
   switchSource,
@@ -504,6 +505,12 @@ export function apply(ctx, config) {
                 response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
                 response.end(JSON.stringify(payload));
               };
+              const guard = sourceRequestGuard(request);
+              if (!guard.ok) {
+                reply(403, { ok: false, reason: guard.reason });
+                return;
+              }
+
               // Optional access: a profile without the plugin manager still reports
               // the local checkout, it just cannot offer the GitHub install mode.
               const manager = typeof ctx.get === 'function' ? ctx.get('pluginManager') : undefined;

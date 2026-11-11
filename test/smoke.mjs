@@ -18,10 +18,10 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { resolveConfig, resolveHomeDir } from '../lib/config.js';
-import { SCHEMA_VERSION, openArchive } from '../lib/db.js';
+import { SCHEMA_VERSION, openArchive, readMeta } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
-import { renderSource, readSource, switchSource } from '../lib/source.js';
+import { renderSource, readSource, sourceRequestGuard, switchSource } from '../lib/source.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
 import { buildFtsQuery, explodeForIndex, gramsOf, hashContent, runsOf, unindexableRuns } from '../lib/text.js';
@@ -910,6 +910,41 @@ await checkAsync('source reads the checkout and refuses unsafe switches', async 
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
+check('the source route only accepts a local, same-origin request', () => {
+  // The carrier gives a plain handler no Peer, so this guard is the whole boundary.
+  const ok = { headers: { host: '127.0.0.1:19387' } };
+  assert.equal(sourceRequestGuard(ok).ok, true, 'a loopback request with no browser headers passes');
+  assert.equal(
+    sourceRequestGuard({ headers: { host: '127.0.0.1:19387', 'sec-fetch-site': 'same-origin' } }).ok,
+    true,
+    'a same-origin page passes',
+  );
+  assert.equal(
+    sourceRequestGuard({ headers: { host: '127.0.0.1:19387', origin: 'http://127.0.0.1:19387' } }).ok,
+    true,
+    'a matching origin passes',
+  );
+
+  // Another machine reaching a widened bind must not drive a state change.
+  const lan = sourceRequestGuard({ headers: { host: '192.168.1.24:19387' } });
+  assert.equal(lan.ok, false, 'a non-loopback Host is refused');
+  assert.match(lan.reason, /not loopback/);
+  assert.equal(sourceRequestGuard({ headers: {} }).ok, false, 'a request with no Host is refused');
+
+  // Another site driving the user's browser must not either.
+  const cross = sourceRequestGuard({ headers: { host: '127.0.0.1:19387', 'sec-fetch-site': 'cross-site' } });
+  assert.equal(cross.ok, false, 'a cross-site request is refused');
+  assert.match(cross.reason, /cross-site/);
+
+  const foreign = sourceRequestGuard({ headers: { host: '127.0.0.1:19387', origin: 'http://evil.example' } });
+  assert.equal(foreign.ok, false, 'an origin that is not this host is refused');
+  assert.match(foreign.reason, /does not match/);
+
+  // `localhost` and IPv6 loopback are still this machine.
+  assert.equal(sourceRequestGuard({ headers: { host: 'localhost:19387' } }).ok, true);
+  assert.equal(sourceRequestGuard({ headers: { host: '[::1]:19387' } }).ok, true);
+});
+
 check('pins protect a session', () => {
   assert.match(store.pinSession({ sessionId: SESSION_ID, reason: 'smoke test' }), /Pinned/);
   assert.equal(store.sessionRow(SESSION_ID).pinned, 1);
@@ -1735,6 +1770,60 @@ try {
 } catch {
   // The OS will clean the temp directory.
 }
+
+await checkAsync('an index left empty by a failed upgrade is rebuilt on the next start', async () => {
+  // `openArchive` drops the FTS tables and stamps the new schema version before
+  // anything rebuilds, so a rebuild that throws there strands an empty index while
+  // `upgraded` is already false. The recorded index version is what has to make the
+  // next start retry; `ftsAvailable` cannot, because it resets with the process.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-index-'));
+  const open = () => new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  const seedHeader = { ...header, id: 'session-smoke-index' };
+  const seedEvents = [
+    { type: 'user/message', seq: 0, time: 1000, data: { text: 'a message the index must find again' } },
+  ];
+  try {
+    const first = open();
+    first.init();
+    first.capture(seedHeader, seedEvents);
+    assert.equal(
+      String(readMeta(first.db, 'search_index_version')),
+      String(SCHEMA_VERSION),
+      'a successful build records the index version',
+    );
+    const indexed = first.get('SELECT count(*) AS n FROM message_fts').n;
+    assert.ok(indexed > 0, 'the first build indexed the seeded message');
+    first.close();
+
+    // Exactly the state a failed rebuild leaves: tables dropped and recreated empty,
+    // version stamped, no marker.
+    const broken = open();
+    broken.init();
+    broken.db.exec("DELETE FROM meta WHERE key = 'search_index_version'");
+    broken.db.exec('DELETE FROM message_fts');
+    broken.close();
+
+    const retried = open();
+    retried.init();
+    try {
+      assert.equal(retried.ftsAvailable, true, 'the retry left FTS enabled');
+      assert.equal(
+        String(readMeta(retried.db, 'search_index_version')),
+        String(SCHEMA_VERSION),
+        'the rebuild was not retried: no index version was recorded',
+      );
+      assert.ok(
+        retried.get('SELECT count(*) AS n FROM message_fts').n > 0,
+        'the retried rebuild did not repopulate the index',
+      );
+    } finally {
+      retried.close();
+    }
+  } finally {
+    // The OS cleans the temp directory; closing a Windows handle and removing its
+    // directory in the same breath races the file system.
+  }
+});
 
 process.stdout.write(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);
 process.exit(failures === 0 ? 0 : 1);
