@@ -21,7 +21,7 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
-import { renderSource, readSource, switchSource } from '../lib/source.js';
+import { renderSource, readSource, sourceRequestGuard, switchSource } from '../lib/source.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
 import { buildFtsQuery, explodeForIndex, gramsOf, hashContent, runsOf, unindexableRuns } from '../lib/text.js';
@@ -908,6 +908,41 @@ await checkAsync('source reads the checkout and refuses unsafe switches', async 
 
   assert.match(renderSource(await readSource(repo)), /\* polaris/);
   fs.rmSync(repo, { recursive: true, force: true });
+});
+
+check('the source route only accepts a local, same-origin request', () => {
+  // The carrier gives a plain handler no Peer, so this guard is the whole boundary.
+  const ok = { headers: { host: '127.0.0.1:19387' } };
+  assert.equal(sourceRequestGuard(ok).ok, true, 'a loopback request with no browser headers passes');
+  assert.equal(
+    sourceRequestGuard({ headers: { host: '127.0.0.1:19387', 'sec-fetch-site': 'same-origin' } }).ok,
+    true,
+    'a same-origin page passes',
+  );
+  assert.equal(
+    sourceRequestGuard({ headers: { host: '127.0.0.1:19387', origin: 'http://127.0.0.1:19387' } }).ok,
+    true,
+    'a matching origin passes',
+  );
+
+  // Another machine reaching a widened bind must not drive a state change.
+  const lan = sourceRequestGuard({ headers: { host: '192.168.1.24:19387' } });
+  assert.equal(lan.ok, false, 'a non-loopback Host is refused');
+  assert.match(lan.reason, /not loopback/);
+  assert.equal(sourceRequestGuard({ headers: {} }).ok, false, 'a request with no Host is refused');
+
+  // Another site driving the user's browser must not either.
+  const cross = sourceRequestGuard({ headers: { host: '127.0.0.1:19387', 'sec-fetch-site': 'cross-site' } });
+  assert.equal(cross.ok, false, 'a cross-site request is refused');
+  assert.match(cross.reason, /cross-site/);
+
+  const foreign = sourceRequestGuard({ headers: { host: '127.0.0.1:19387', origin: 'http://evil.example' } });
+  assert.equal(foreign.ok, false, 'an origin that is not this host is refused');
+  assert.match(foreign.reason, /does not match/);
+
+  // `localhost` and IPv6 loopback are still this machine.
+  assert.equal(sourceRequestGuard({ headers: { host: 'localhost:19387' } }).ok, true);
+  assert.equal(sourceRequestGuard({ headers: { host: '[::1]:19387' } }).ok, true);
 });
 
 check('pins protect a session', () => {
