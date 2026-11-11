@@ -179,9 +179,14 @@ window.__ModuleLoader__.load({
       const dirty = Array.isArray(source.dirty) ? source.dirty.length : 0;
       const checkout = source.checkout === true;
       const mode = state.mode || (source.mode === 'github' ? 'github' : 'local');
+      // The spec alone does not say which build that is: `#dev` moves, and a linked
+      // checkout reports the branch instead. The installed version is what the user
+      // can compare against a release, so it rides along with both.
+      const version = source.version ? ` · v${source.version}` : '';
+      const specLabel = source.spec ? `${source.spec}${version}` : '';
       const where = checkout
-        ? `${source.branch} @ ${source.sha}${dirty > 0 ? ` · ${dirty} ${t('uncommitted')}` : ''}`
-        : String(source.spec || source.reason || '');
+        ? `${source.branch} @ ${source.sha}${dirty > 0 ? ` · ${dirty} ${t('uncommitted')}` : ''}${version}`
+        : String(specLabel || source.reason || '');
 
       return h(
         'div',
@@ -189,7 +194,7 @@ window.__ModuleLoader__.load({
         h('h2', { style: { margin: 0, fontSize: 15 } }, t('title')),
         h('p', { style: STYLE.hint }, t('hint')),
         h('div', { style: STYLE.now }, `${t('current')}: ${where}`),
-        source.spec ? h('p', { style: STYLE.hint }, `${t('installs')}: ${source.spec}`) : null,
+        specLabel ? h('p', { style: STYLE.hint }, `${t('installs')}: ${specLabel}`) : null,
         h(
           'div',
           { style: STYLE.modes },
