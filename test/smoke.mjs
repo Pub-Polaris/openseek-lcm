@@ -18,7 +18,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { resolveConfig, resolveHomeDir } from '../lib/config.js';
-import { SCHEMA_VERSION, openArchive } from '../lib/db.js';
+import { SCHEMA_VERSION, openArchive, readMeta } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
 import { renderSource, readSource, sourceRequestGuard, switchSource } from '../lib/source.js';
@@ -1770,6 +1770,60 @@ try {
 } catch {
   // The OS will clean the temp directory.
 }
+
+await checkAsync('an index left empty by a failed upgrade is rebuilt on the next start', async () => {
+  // `openArchive` drops the FTS tables and stamps the new schema version before
+  // anything rebuilds, so a rebuild that throws there strands an empty index while
+  // `upgraded` is already false. The recorded index version is what has to make the
+  // next start retry; `ftsAvailable` cannot, because it resets with the process.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-index-'));
+  const open = () => new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  const seedHeader = { ...header, id: 'session-smoke-index' };
+  const seedEvents = [
+    { type: 'user/message', seq: 0, time: 1000, data: { text: 'a message the index must find again' } },
+  ];
+  try {
+    const first = open();
+    first.init();
+    first.capture(seedHeader, seedEvents);
+    assert.equal(
+      String(readMeta(first.db, 'search_index_version')),
+      String(SCHEMA_VERSION),
+      'a successful build records the index version',
+    );
+    const indexed = first.get('SELECT count(*) AS n FROM message_fts').n;
+    assert.ok(indexed > 0, 'the first build indexed the seeded message');
+    first.close();
+
+    // Exactly the state a failed rebuild leaves: tables dropped and recreated empty,
+    // version stamped, no marker.
+    const broken = open();
+    broken.init();
+    broken.db.exec("DELETE FROM meta WHERE key = 'search_index_version'");
+    broken.db.exec('DELETE FROM message_fts');
+    broken.close();
+
+    const retried = open();
+    retried.init();
+    try {
+      assert.equal(retried.ftsAvailable, true, 'the retry left FTS enabled');
+      assert.equal(
+        String(readMeta(retried.db, 'search_index_version')),
+        String(SCHEMA_VERSION),
+        'the rebuild was not retried: no index version was recorded',
+      );
+      assert.ok(
+        retried.get('SELECT count(*) AS n FROM message_fts').n > 0,
+        'the retried rebuild did not repopulate the index',
+      );
+    } finally {
+      retried.close();
+    }
+  } finally {
+    // The OS cleans the temp directory; closing a Windows handle and removing its
+    // directory in the same breath races the file system.
+  }
+});
 
 process.stdout.write(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);
 process.exit(failures === 0 ? 0 : 1);
