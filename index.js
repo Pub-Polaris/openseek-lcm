@@ -39,12 +39,13 @@ import { join } from 'node:path';
 
 import { resolveConfig, resolveHomeDir } from './lib/config.js';
 import { buildLcmCommand } from './lib/commands.js';
+import { runMaintenance } from './lib/maintenance.js';
 import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
 import {
   checkInstallable,
-  gitHubSpec,
+  gitHubSpecAt,
   linkSpec,
   readBranchHeads,
   readSeenHeads,
@@ -62,6 +63,7 @@ import { buildTools } from './lib/tools.js';
 
 /** The one route the settings page talks to. */
 const SOURCE_ROUTE = '/openseek-lcm/source';
+const MAINTENANCE_ROUTE = '/openseek-lcm/maintenance';
 
 /** Read a small JSON request body; anything larger is not our payload. */
 async function readJsonBody(request, limit = 4096) {
@@ -549,13 +551,6 @@ export function apply(ctx, config) {
                   const { spec: current } = await readInstall();
 
                   if (requested === 'github') {
-                    // pnpm reports "nothing changed" as an ambiguous install, so an
-                    // already-installed spec has to be recognised here rather than
-                    // handed to the manager and shown as a failure.
-                    if (sameGitHubSpec(current, branch)) {
-                      reply(200, { ok: true, mode: 'github', branch, unchanged: true, spec: redactSpec(current) });
-                      return;
-                    }
                     if (typeof manager?.installBundle !== 'function') {
                       reply(409, { ok: false, reason: 'the plugin manager is unavailable in this profile' });
                       return;
@@ -573,7 +568,24 @@ export function apply(ctx, config) {
                       reply(409, { ok: false, reason: usable.reason, mode: 'github', branch });
                       return;
                     }
-                    const change = await manager.installBundle(gitHubSpec(branch), { enabled: true });
+                    // Install the commit, not the branch. A branch spec resolves once
+                    // and then sits in `pnpm-lock.yaml`, so pressing the branch you are
+                    // already on never picked up anything -- that is why this profile
+                    // stayed on 0.1.1 for weeks. A commit makes the spec move when the
+                    // head moves, and it also means the vetted commit is the installed
+                    // one rather than two things that happen to agree today.
+                    if (sameGitHubSpec(current, usable.sha)) {
+                      reply(200, {
+                        ok: true,
+                        mode: 'github',
+                        branch,
+                        sha: usable.sha,
+                        unchanged: true,
+                        spec: redactSpec(current),
+                      });
+                      return;
+                    }
+                    const change = await manager.installBundle(gitHubSpecAt(usable.sha), { enabled: true });
                     const ok = change?.application !== 'failed' && change?.application !== 'cancelled';
                     if (ok) recordBranchHead(branch, usable.sha, seenFile);
                     reply(ok ? 200 : 409, { ok, mode: 'github', branch, sha: usable.sha, change });
@@ -643,7 +655,40 @@ export function apply(ctx, config) {
               }
             },
           });
-          return () => unregister();
+          // The same page also carries the housekeeping buttons. They share the
+          // guard and the `apply` flag the `/lcm` subcommands use, so a preview
+          // button cannot write; nothing here can install code or move a spec.
+          const unregisterMaintenance = child.webServer.register({
+            kind: 'prefix',
+            path: MAINTENANCE_ROUTE,
+            handler: async (request, response) => {
+              const reply = (status, payload) => {
+                response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+                response.end(JSON.stringify(payload));
+              };
+              const guard = sourceRequestGuard(request);
+              if (!guard.ok) {
+                reply(403, { ok: false, reason: guard.reason });
+                return;
+              }
+              if (request.method !== 'POST') {
+                reply(405, { ok: false, reason: 'POST only' });
+                return;
+              }
+              try {
+                const body = (await readJsonBody(request)) ?? {};
+                const applied = body.apply === true;
+                const text = runMaintenance(store, { action: body.action, apply: applied });
+                reply(200, { ok: true, text, applied });
+              } catch (error) {
+                reply(500, { ok: false, reason: String(error?.message ?? error) });
+              }
+            },
+          });
+          return () => {
+            unregister();
+            unregisterMaintenance();
+          };
         },
         'lcm source route',
       );
