@@ -38,6 +38,3 @@
 | `privacy.redactCredentials` | `true` | 额外套用内置的凭据形状（`sk-…`、`gh?__…`、JWT、`password: …`）。归档比会话活得久，落在里面的 token 会被再次召回，所以默认开。 |
 | `source.allowModeSwitch` | `true` | 设置页那条路由是否允许切换/重装。置 `false` 只能看。 |
 | `source.allowUnmerged` | `false` | 允许安装**未合并进 main** 的分支头。默认只认已合并的提交；打开等于接受供应链风险。 |
-| `maintenance.autoEnabled` | `false` | 定时维护：`blob_gc` + `compact` 的 prune/checkpoint。 |
-| `maintenance.intervalMinutes` | `360` | 上面那个的间隔（最小 5 分钟）。 |
-| `maintenance.vacuum` | `false` | 让自动维护也做 VACUUM。**默认关**：它重写整个库并持锁。 |

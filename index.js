@@ -39,7 +39,6 @@ import { join } from 'node:path';
 
 import { resolveConfig, resolveHomeDir } from './lib/config.js';
 import { buildLcmCommand } from './lib/commands.js';
-import { compactDatabase, gcBlobs } from './lib/maintenance.js';
 import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
@@ -473,39 +472,6 @@ export function apply(ctx, config) {
         }
       };
     }, 'lcm tools');
-  }
-
-  // Housekeeping on a timer, off unless the operator turns it on.
-  //
-  // Nothing used to reclaim anything: `compact` / `gc` / `retention` were manual
-  // calls, so the archive only ever grew. A session is the unit of retention, so
-  // this cannot shrink a live one -- but it can stop dead weight (orphan blobs,
-  // prunable events, the WAL) from accumulating between manual runs.
-  //
-  // It never runs while a capture is in flight, and it never vacuums unless the
-  // operator asked for that separately: VACUUM rewrites the whole file and holds
-  // it, which is not something to start behind a running conversation.
-  if (!storeError && resolved.maintenance?.autoEnabled === true) {
-    ctx.effect(() => {
-      const everyMinutes = Math.max(5, resolved.maintenance.intervalMinutes);
-      const tick = () => {
-        if (store.writesInFlight > 0) return;
-        try {
-          gcBlobs(store, {
-            apply: true,
-            limit: 50,
-            orphanBlobDays: resolved.retention?.orphanBlobDays,
-          });
-          compactDatabase(store, { apply: true, vacuum: resolved.maintenance.vacuum === true });
-        } catch (error) {
-          logger.warn?.(`[lcm] automatic maintenance failed: ${error?.message ?? error}`);
-        }
-      };
-      const handle = setInterval(tick, everyMinutes * 60 * 1000);
-      handle.unref?.();
-      logger.info?.(`[lcm] automatic maintenance every ${everyMinutes} min${resolved.maintenance.vacuum ? ' (with VACUUM)' : ''}`);
-      return () => clearInterval(handle);
-    }, 'lcm automatic maintenance');
   }
 
   // `/lcm`: the human-facing surface. It is registered through an optional

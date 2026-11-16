@@ -183,7 +183,6 @@ git commit ; git push origin dev
 
 1. **字符类覆盖 + 归一化。** 索引与查询两边都做 `NFKC`（`foldText`），全角/兼容字符折成 ASCII；新增半角片假名、谚文字母、CJK 扩展 B、emoji 与符号区。符号不能直接进 FTS —— `unicode61` 只认词字符，所以符号走 `sym<hex>` 的 ASCII 替身（`symbolTokens`），两侧共用。测试：`the index folds width, and single symbols are addressable`。
 2. **`retention.deletedSessionDays` 现在会触发。** 没有宿主删除事件可用，改用一条诚实的信号：日志目录不存在的会话由 `doctor` 标 `deleted = 1`（跳过 pinned；**sessions 根不存在时一律不标**，那说明"看不到"，不说明"没了"）。测试：`the doctor marks a session whose log is gone, and spans describe without text`。
-3. **归档会自我维护了。** `maintenance.autoEnabled`（**默认关闭**）下每 N 分钟跑 `blob_gc` + `compact` 的 prune/checkpoint；**永不自动 VACUUM**；有 capture 在飞时整轮跳过。它不会缩小活会话 —— 会话仍是保留的最小单位。
 4. **`sanitizeFtsTokens` / `FTS5_RESERVED` 已删。** 查询只发带引号的短语，二者从未被调用。
 5. **`orphanBlobDays: 0` 不再晚一轮。** 宽限期改成从**打戳那一刻**算，所以本次刚打戳的批次也在 cutoff 之内。测试：`a zero grace period collects the batch it just stamped`。
 
@@ -195,7 +194,7 @@ git commit ; git push origin dev
 
 ## 未修（留作已知行为）
 
-- **归档体积仍然实打实**：45k 消息 → 300+ MiB。自动维护只回收死重量，真正变小要靠 `lcm_compact apply` 的 VACUUM（手动）。
+- **归档体积仍然实打实**：45k 消息 → 300+ MiB。回收死重量靠手动 `lcm_blob_gc` + `lcm_compact apply`（VACUUM）。
 - **子串扫描不做归一化**：索引能把全角折成 ASCII 并命中，但 `allowScan` 的 LIKE 扫描比对的是原文，全角查询在那里仍可能漏。修它要给内容列存一份折叠副本，代价大于收益。
 
 ---

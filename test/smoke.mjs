@@ -2126,5 +2126,81 @@ await checkAsync('a file artifact is stored as a reference, and says so when it 
   }
 });
 
+await checkAsync('an unreadable sessions root marks nothing deleted', async () => {
+  // If the root cannot be listed, "absent from the listing" says nothing about the
+  // sessions -- so the pass must decline rather than mark everything deleted. The
+  // same guard covers a workspace directory that fails to list mid-pass.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-unreadable-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-unreadable';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'unreadable-u-1', role: 'user', content: [{ type: 'text', text: 'keep me' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    // A regular file where the sessions root belongs: readdirSync throws ENOTDIR.
+    const sessionsRoot = path.join(dir, 'sessions-is-a-file');
+    fs.writeFileSync(sessionsRoot, 'not a directory');
+
+    local.runDoctor({ apply: true, sessionsRoot });
+    assert.equal(
+      local.get('SELECT deleted FROM sessions WHERE session_id = ?', sessionId).deleted,
+      0,
+      'nothing may be marked when the root cannot be read',
+    );
+  } finally {
+    local.close();
+  }
+});
+
+await checkAsync('a redacted body is never stored as a file reference', async () => {
+  // A pointer reads the file, which still holds the original text; taking one for a
+  // body that redaction rewrote would silently undo the redaction.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-redactref-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  const file = path.join(dir, 'secret.txt');
+  fs.writeFileSync(file, 'PASSWORD is in this file');
+  try {
+    const sessionId = 'session-smoke-redactref';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'rr-u-1', role: 'user', content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    local.insertArtifact(sessionId, 'rr-m-1', {
+      artifactId: 'rr-art-1',
+      blockIndex: 0,
+      kind: 'text',
+      fieldName: 'text',
+      preview: 'PASSWORD is',
+      content: '[REDACTED] is in this file',
+      metadata: { blockType: 'text', sourcePath: file, redacted: true },
+    });
+    const stored = local.get(
+      'SELECT b.content_text AS blob FROM artifacts a JOIN artifact_blobs b ON b.content_hash = a.content_hash WHERE a.artifact_id = ?',
+      'rr-art-1',
+    );
+    assert.ok(stored.blob.length > 0, 'the redacted body is stored, not referenced');
+    assert.equal(stored.blob.includes('PASSWORD'), false);
+  } finally {
+    local.close();
+  }
+});
+
 process.stdout.write(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);
 process.exit(failures === 0 ? 0 : 1);
