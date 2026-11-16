@@ -13,6 +13,7 @@
 - **blob GC 的批次上限。** `lcm_blob_gc` 与 `/lcm gc` 都接受 `orphanBlobDays`（`0` 表示不留宽限期，本次刚打戳的批次也算在截止线内）。每次上限 50 条，清几百个需反复调用。
 - **体积的大头是消息行与 FTS 索引，不是 blob。** 实测 3,700 个 blob 合计约 14 MB，而库约 100 MB；把空间真正还回磁盘靠 `lcm_compact apply=true` 的 VACUUM（实测一次回收 12 MB 量级）。
 - **升级换了索引格式后，存量行要手动重建。** 行数不变，`doctor` 的自动修复看不见；跑一次 `/lcm doctor apply --reindex`（或工具 `lcm_doctor` 带 `reindex: true`）。
+- **CJK 扩展区只索引到 Ext B，32,223 个汉字搜不到。** 覆盖的是 Ext A / 基本区 / 兼容表意 / Ext B（80,776 字）；**Ext C、D、E、F、I（22,252 字）、兼容表意补充（542 字）、Ext G、H、J（13,429 字）连索引都不进** —— 查询它们得到的是"没有找到"，与"确实不存在"无法区分，且不报错。Unicode 18.0 新增的 Jurchen（965 字）与 Seal（11,328 字）同理。修法是在 `lib/text.js` 的 `CJK_SOURCE` 补 `20000-2FA1F` 与 `30000-3347F`，改完必须 `--reindex`。
 - **切分按码点对齐，但不按字素簇。** `truncate` / `headTail` / `buildSnippet` 不会切出孤立代理（那会让 API 拒收整个请求体，见 issue #10），但 emoji 的肤色修饰、ZWJ 家族、旗帜这类字素簇仍可能被劈开 —— 只是显示不完整，不会报错。
 - **`char_count` 是 UTF-16 码元，不是码点。** 存的是 JS `text.length`；SQLite 的 `length()` 反而返回码点，所以对 astral 字符（emoji、PUA-Ext A/B）两者不同（2 vs 1）。当前没有代码拿两者比对，写「重建 char_count」或「长度漂移检测」时别混用。
 - **子串扫描不做归一化。** 索引两边都做 NFKC，所以全角查询能命中；但 `allowScan` 的 LIKE 扫描比对原文，全角查询在那条路径上仍可能漏。
