@@ -196,6 +196,17 @@ git commit ; git push origin dev
 
 - **归档体积仍然实打实**：45k 消息 → 300+ MiB。回收死重量靠手动 `lcm_blob_gc` + `lcm_compact apply`（VACUUM）。
 - **子串扫描不做归一化**：索引能把全角折成 ASCII 并命中，但 `allowScan` 的 LIKE 扫描比对的是原文，全角查询在那里仍可能漏。修它要给内容列存一份折叠副本，代价大于收益。
+- **`CJK_SOURCE` 只覆盖到 Ext B，32,223 个已分配汉字完全搜不到。** 实测（Unicode 18.0.0 的 `UnicodeData.txt`，2026-07-08）：
+
+  | 区块 | 已分配 | 覆盖 |
+  |---|---|---|
+  | Ext A / 基本区 / 兼容表意 / Ext B | 80,776 | ✅ |
+  | Ext C·D·E·F·I | 22,252 | ❌ |
+  | 兼容表意补充（U+2F800） | 542 | ❌ |
+  | Ext G·H·J | 13,429 | ❌ |
+
+  `runsOf("𪜀")`（Ext C，U+2A700）返回 `[]` —— 连 run 都拿不到，所以**不报错、悄悄搜不到**。修法是往 `lib/text.js` 的 `CJK_SOURCE` 补范围：`20000-2FA1F`（B–I + 兼容补充）与 `30000-3347F`（G/H/J）。**改完存量归档必须 `/lcm doctor apply --reindex`**，否则老行仍是旧索引。用户 2026-11-17 决定"下次再改"，所以只记录、未修。
+- **Unicode 18.0.0 新增的两个表意文字也没进索引**：Jurchen（U+18E00–U+191DF，965 字）、Seal（U+3D000–U+3FC3F，11,328 字）。本机 Node 24.22.1 是 **Unicode 17.0**（ICU 78.3），`\p{Script=Han}` 认不得它们 —— 所以这类比对**只能用官方 `Blocks.txt` / `UnicodeData.txt`**，别指望用本地 ICU 验证。比对用的数据在 `~\.dsh\backup\unicode\`（17.0.0 与 18.0.0 各一份 `Blocks.txt`，18.0.0 的 `UnicodeData.txt`）。
 
 ---
 
