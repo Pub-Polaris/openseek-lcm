@@ -231,6 +231,11 @@ window.__ModuleLoader__.load({
           branches.map(function (entry) {
             const active = checkout && entry.name === source.branch;
             const busy = state.busy === entry.name;
+            // `name  v0.3.1  9a2cf0a`, and a dirty checkout prefixes the hash so the
+            // row says "this is not a commit you can point at".
+            const ref = `${entry.version ? `  v${entry.version}` : ''}${
+              entry.sha ? `  ${entry.dirty ? '*' : ''}${entry.sha}` : ''
+            }`;
             return h(
               'button',
               {
@@ -242,7 +247,7 @@ window.__ModuleLoader__.load({
                   apply(mode, entry.name);
                 },
               },
-              h('span', { style: STYLE.name }, active ? `${entry.name}  ✓` : entry.name),
+              h('span', { style: STYLE.name }, `${active ? `${entry.name}  ✓` : entry.name}${ref}`),
               h('span', { style: STYLE.summary }, entry.summary),
             );
           }),

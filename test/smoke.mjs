@@ -21,7 +21,7 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive, readMeta } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
-import { renderSource, readSource, sourceRequestGuard, switchSource, checkInstallable, redactSpec } from '../lib/source.js';
+import { renderSource, readSource, readBranchHeads, sourceRequestGuard, switchSource, checkInstallable, redactSpec } from '../lib/source.js';
 import { indexCanRepresentRun } from '../lib/text.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
@@ -2249,6 +2249,36 @@ await checkAsync('--reindex rebuilds the index that counts cannot see', async ()
     assert.ok(local.grep({ query: 'abc123', sessionId, allowScan: false }).length > 0);
   } finally {
     local.close();
+  }
+});
+
+await checkAsync('each branch row carries its own version and head', async () => {
+  // A branch list that only names branches cannot say what is on them; the page
+  // shows `name vX.Y.Z hash` so the choice is informed.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-heads-'));
+  const bare = path.join(dir, 'remote.git');
+  const work = path.join(dir, 'work');
+  const git = (...args) => execFileSync('git', args, { cwd: work, stdio: 'pipe' }).toString();
+  try {
+    execFileSync('git', ['init', '--bare', bare], { stdio: 'pipe' });
+    execFileSync('git', ['clone', bare, work], { stdio: 'pipe' });
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+    fs.writeFileSync(path.join(work, 'package.json'), JSON.stringify({ name: 'x', version: '9.8.7' }, null, 2));
+    git('add', '.');
+    git('commit', '-m', 'init', '--quiet');
+    git('branch', '-M', 'main');
+    git('push', 'origin', 'main', '--quiet');
+
+    const heads = await readBranchHeads(work);
+    const main = heads.find((entry) => entry.name === 'main');
+    assert.equal(main.version, '9.8.7', "the row carries the branch's own version");
+    assert.equal(main.sha, git('rev-parse', '--short', 'origin/main').trim(), 'and its head');
+    const missing = heads.find((entry) => entry.name === 'dev');
+    assert.equal(missing.sha, '', 'a branch that was never pushed has no head');
+    assert.equal(missing.version, '', 'and no version');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

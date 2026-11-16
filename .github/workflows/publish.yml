@@ -52,5 +52,17 @@ jobs:
 
       # --provenance attaches a signed statement linking the tarball to this
       # workflow run and commit.
+      #
+      # The tag is chosen, not defaulted: `npm publish` defaults to `latest`, and
+      # moving `latest` back off a prerelease needs account credentials this
+      # repository does not hold (the owner's 2FA is a passkey, which cannot produce
+      # an OTP). Prereleases therefore go to `next`; stable versions take `latest`.
       - name: Publish
-        run: npm publish --provenance --access public
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          case "$version" in
+            *-*) tag=next ;;
+            *) tag=latest ;;
+          esac
+          echo "publishing $version under the $tag tag"
+          npm publish --provenance --access public --tag "$tag"
