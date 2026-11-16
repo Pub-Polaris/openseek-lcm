@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
     const ROUTE = '/openseek-lcm/source';
+    const MAINTENANCE_ROUTE = '/openseek-lcm/maintenance';
     const NS = 'openseek-lcm-source';
 
     const DICT = {
@@ -33,6 +34,16 @@ window.__ModuleLoader__.load({
         localOnly: 'No local checkout here, so only the GitHub branch can be used.',
         applying: 'Applying…',
         installs: 'installs from',
+        maint: 'Maintenance',
+        preview: 'Preview',
+        apply: 'Apply',
+        doctor: 'Health check',
+        reindex: 'Rebuild index',
+        gc: 'Orphan blobs',
+        compact: 'Compact',
+        retention: 'Retention',
+        running: 'Running…',
+        previewOnly: 'Preview only — switch to Apply to change anything.',
       },
       zh: {
         title: 'openseek-lcm版本分支',
@@ -49,6 +60,16 @@ window.__ModuleLoader__.load({
         localOnly: '本机没有这个仓库的检出，只能用 GitHub 分支。',
         applying: '正在应用…',
         installs: '来源',
+        maint: '维护',
+        preview: '预览',
+        apply: '执行',
+        doctor: '体检',
+        reindex: '重建索引',
+        gc: '回收孤儿 blob',
+        compact: '压缩',
+        retention: '保留策略',
+        running: '正在执行…',
+        previewOnly: '仅预览 —— 切到「执行」才会真正改动。',
       },
     };
 
@@ -87,6 +108,18 @@ window.__ModuleLoader__.load({
       summary: { opacity: 0.7, fontSize: 12 },
       note: { margin: 0, fontSize: 12 },
       failure: { margin: 0, fontSize: 12, color: '#c0392b' },
+      toolbar: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' },
+      applyOn: { borderColor: '#c0392b', fontWeight: 600 },
+      output: {
+        margin: 0,
+        padding: '8px 10px',
+        borderRadius: 8,
+        border: '1px solid rgba(128,128,128,0.35)',
+        font: '12px ui-monospace, SFMono-Regular, Menlo, monospace',
+        whiteSpace: 'pre-wrap',
+        maxHeight: 260,
+        overflow: 'auto',
+      },
     };
 
     let translate = function (key) {
@@ -106,10 +139,48 @@ window.__ModuleLoader__.load({
     function SourcePage() {
       const t = safeTranslate;
       const [state, setState] = React.useState({ phase: 'loading' });
+      const ACTIONS = ['doctor', 'reindex', 'gc', 'compact', 'retention'];
 
       async function reload() {
         const response = await fetch(ROUTE, { headers: { accept: 'application/json' } });
         return response.json();
+      }
+
+      // Housekeeping runs on the Host, through the same guard as the source route.
+      // `apply` is the only thing that separates a preview from a change, so the
+      // mode is visible next to the buttons rather than hidden in a checkbox.
+      async function runAction(action) {
+        setState(function (previous) {
+          return Object.assign({}, previous, { running: action, output: null });
+        });
+        const applyMode = state.applyMode === true;
+        try {
+          const response = await fetch(MAINTENANCE_ROUTE, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: action, apply: applyMode }),
+          });
+          const result = await response.json();
+          if (!result || result.ok !== true) {
+            setState(function (previous) {
+              return Object.assign({}, previous, {
+                running: null,
+                output: (result && result.reason) || t('failed'),
+              });
+            });
+            return;
+          }
+          setState(function (previous) {
+            return Object.assign({}, previous, { running: null, output: result.text });
+          });
+        } catch (error) {
+          setState(function (previous) {
+            return Object.assign({}, previous, {
+              running: null,
+              output: String((error && error.message) || error),
+            });
+          });
+        }
       }
 
       React.useEffect(function () {
@@ -155,7 +226,18 @@ window.__ModuleLoader__.load({
           // The route reads the checkout live, so a reload already reflects it; a
           // GitHub install reports `restart-required` and the note covers that.
           const source = await reload();
-          setState({ phase: 'ready', source: source, busy: null, failure: null, applied: true, mode: mode });
+          // Keep the maintenance state: switching a branch should not silently
+          // flip the housekeeping buttons back to preview or drop the last output.
+          setState(function (previous) {
+            return Object.assign({}, previous, {
+              phase: 'ready',
+              source: source,
+              busy: null,
+              failure: null,
+              applied: true,
+              mode: mode,
+            });
+          });
         } catch (error) {
           setState(function (previous) {
             return Object.assign({}, previous, {
@@ -255,6 +337,47 @@ window.__ModuleLoader__.load({
         state.busy ? h('p', { style: STYLE.note }, t('applying')) : null,
         state.applied ? h('p', { style: STYLE.note }, t('restart')) : null,
         state.failure ? h('p', { style: STYLE.failure }, state.failure) : null,
+        h('h3', { style: { margin: '6px 0 0', fontSize: 14 } }, t('maint')),
+        h(
+          'div',
+          { style: STYLE.toolbar },
+          h(
+            'button',
+            {
+              key: '__mode__',
+              type: 'button',
+              style: Object.assign({}, STYLE.mode, state.applyMode ? STYLE.applyOn : null),
+              title: t('previewOnly'),
+              onClick: function () {
+                setState(function (previous) {
+                  return Object.assign({}, previous, { applyMode: previous.applyMode !== true });
+                });
+              },
+            },
+            state.applyMode ? t('apply') : t('preview'),
+          ),
+          ACTIONS.map(function (action) {
+            return h(
+              'button',
+              {
+                key: action,
+                type: 'button',
+                disabled: state.running !== null && state.running !== undefined,
+                style: Object.assign(
+                  {},
+                  STYLE.mode,
+                  state.running === action ? STYLE.rowBusy : null,
+                ),
+                onClick: function () {
+                  runAction(action);
+                },
+              },
+              state.running === action ? t('running') : t(action),
+            );
+          }),
+        ),
+        state.output ? h('pre', { style: STYLE.output }, state.output) : null,
+        state.applyMode ? null : h('p', { style: STYLE.hint }, t('previewOnly')),
       );
     }
 

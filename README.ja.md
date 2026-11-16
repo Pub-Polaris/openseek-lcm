@@ -66,7 +66,7 @@ plugin_manager { action: install_bundle, target: "openseek-lcm" }
 ## `/lcm`
 
 ```
-/lcm status · grep · expand · describe · resume · lineage
+/lcm status · quick · grep · expand · describe · resume · lineage
 /lcm pin | unpin · blobstats · gc · compact · doctor · retention
 /lcm source [branch]       動いているのがどのコピーかを表示 / 切り替え
 ```

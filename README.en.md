@@ -66,7 +66,7 @@ Every key, what the four scopes mean, and each tool's parameters: [docs/config.m
 ## `/lcm`
 
 ```
-/lcm status · grep · expand · describe · resume · lineage
+/lcm status · quick · grep · expand · describe · resume · lineage
 /lcm pin | unpin · blobstats · gc · compact · doctor · retention
 /lcm source [branch]       show / switch which copy of the plugin runs
 ```

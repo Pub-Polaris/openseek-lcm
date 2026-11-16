@@ -66,7 +66,7 @@ plugin_manager { action: install_bundle, target: "openseek-lcm" }
 ## `/lcm`
 
 ```
-/lcm status · grep · expand · describe · resume · lineage
+/lcm status · quick · grep · expand · describe · resume · lineage
 /lcm pin | unpin · blobstats · gc · compact · doctor · retention
 /lcm source [branch]       查看 / 切换插件跑的是哪份代码
 ```
@@ -78,6 +78,8 @@ plugin_manager { action: install_bundle, target: "openseek-lcm" }
 profile 里那一行的 spec 决定跑哪种代码：`link:<仓库>` 是本地检出，`github:…#<分支>` 是装下来的副本。**改代码只在 `link:` 下生效。**
 
 入口两个：设置页「插件 → openseek-lcm版本分支」（含版本号），和 `/lcm source`。切换后要重启。
+
+同一页还有维护按钮（体检 / 重建索引 / 回收孤儿 blob / 压缩 / 保留策略），左侧在**预览**与**执行**之间切换；预览永不写库。
 
 ## 文档
 

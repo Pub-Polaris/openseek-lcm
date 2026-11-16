@@ -21,7 +21,9 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive, readMeta } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
-import { renderSource, readSource, readBranchHeads, sourceRequestGuard, switchSource, checkInstallable, redactSpec } from '../lib/source.js';
+import { renderSource, readSource, readBranchHeads, sourceRequestGuard, switchSource, checkInstallable, redactSpec, gitHubSpecAt, sameGitHubSpec } from '../lib/source.js';
+import { buildLcmCommand } from '../lib/commands.js';
+import { runMaintenance } from '../lib/maintenance.js';
 import { indexCanRepresentRun } from '../lib/text.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
@@ -2324,6 +2326,72 @@ check('slicing never leaves half a surrogate', () => {
         assert.deepEqual(lone(buildSnippet(text, 'y', limit)), [], `buildSnippet ${where} limit=${limit}`);
       }
     }
+  }
+});
+
+await checkAsync('a GitHub install pins the commit, not the branch', async () => {
+  // Installing `#branch` is why this profile sat on 0.1.1: pnpm resolves the branch
+  // once, freezes it in the lockfile, and a second install of the same spec is a
+  // no-op. A commit makes the spec itself move.
+  const spec = gitHubSpecAt('a487cfd8607b64b63f14cfd0b17acd4b1eca08f0');
+  assert.equal(spec, 'github:Pub-Polaris/openseek-lcm#a487cfd8607b64b63f14cfd0b17acd4b1eca08f0');
+  assert.equal(sameGitHubSpec(spec, 'a487cfd8607b64b63f14cfd0b17acd4b1eca08f0'), true, 'the pinned spec counts as installed');
+  assert.equal(sameGitHubSpec(spec, '0000000000000000000000000000000000000000'), false, 'a different commit does not');
+  assert.equal(sameGitHubSpec('github:Pub-Polaris/openseek-lcm#polaris', 'polaris'), true, 'a branch ref still compares as itself');
+});
+
+await checkAsync('/lcm quick answers the three post-compaction questions', async () => {
+  const quickDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-quick-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: quickDir }, { homeDir: quickDir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-quick';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'quick-u-1', role: 'user', content: [{ type: 'text', text: 'we decided to ship the fix' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    const command = buildLcmCommand({ store: local, ensureCaptured: async () => {} });
+    const result = await command.handler({ rawInput: 'quick', agent: { session: { id: sessionId } } });
+    assert.equal(result.kind, 'success');
+    assert.match(result.text, /messages\s+\d+ archived/, 'inventory');
+    assert.match(result.text, /this session/, 'this session');
+    assert.match(result.text, /resume note/, 'resume note');
+    assert.match(result.text, /\/lcm grep/, 'where to go next');
+  } finally {
+    local.close();
+  }
+});
+
+check('a maintenance preview never writes, and apply does', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-maint-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const hash = 'smoke-maintenance-orphan';
+    local.run(
+      `INSERT INTO artifact_blobs (content_hash, content_text, char_count, created_at, orphaned_at)
+       VALUES (?, 'orphan', 6, ?, NULL)`,
+      hash,
+      Date.now(),
+    );
+    const preview = runMaintenance(local, { action: 'gc', apply: false });
+    assert.ok(typeof preview === 'string' && preview.length > 0);
+    assert.ok(local.get('SELECT 1 AS present FROM artifact_blobs WHERE content_hash = ?', hash), 'preview left the blob alone');
+
+    const applied = runMaintenance(local, { action: 'gc', apply: true, orphanBlobDays: 0 });
+    assert.match(applied, /Deleted|No orphaned/);
+    assert.equal(local.get('SELECT 1 AS present FROM artifact_blobs WHERE content_hash = ?', hash), undefined);
+
+    assert.match(runMaintenance(local, { action: 'nonsense' }), /Unknown maintenance action/);
+  } finally {
+    local.close();
   }
 });
 
