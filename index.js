@@ -46,6 +46,7 @@ import {
   checkInstallable,
   gitHubSpec,
   linkSpec,
+  readBranchHeads,
   readSeenHeads,
   readSource,
   recordBranchHead,
@@ -606,6 +607,16 @@ export function apply(ctx, config) {
                       ? 'local'
                       : 'unknown';
                 const local = await readSource();
+                // Each row names a branch, so each row should say what is on it:
+                // `${version}` from that branch's own manifest and the commit it
+                // points at. A dirty working tree marks the *current* branch only --
+                // it is a property of this checkout, not of the remote.
+                let heads;
+                try {
+                  heads = await readBranchHeads();
+                } catch {
+                  heads = SOURCE_BRANCHES;
+                }
                 reply(200, {
                   ok: true,
                   // The absolute path of a link names the account and the checkout
@@ -618,7 +629,11 @@ export function apply(ctx, config) {
                   sha: local.ok ? local.sha : undefined,
                   dirty: local.ok ? local.dirty : [],
                   reason: local.ok ? undefined : local.reason,
-                  branches: SOURCE_BRANCHES,
+                  branches: heads.map((entry) => ({
+                    ...entry,
+                    dirty:
+                      local.ok && entry.name === local.branch && Array.isArray(local.dirty) && local.dirty.length > 0,
+                  })),
                   modes: SOURCE_MODES,
                   allowModeSwitch: resolved.source?.allowModeSwitch !== false,
                   allowUnmerged: resolved.source?.allowUnmerged === true,
