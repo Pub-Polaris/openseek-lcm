@@ -33,6 +33,24 @@ Or a specific branch: `github:Pub-Polaris/openseek-lcm#dev`.
 
 No runtime dependency except `node:sqlite`.
 
+## Which characters the index covers
+
+Retrieval runs on an n-gram index: three characters for Latin, two for CJK, one for a symbol. **Which code points count as CJK is a hardcoded range table**, and that table is a Unicode snapshot -- it decays:
+
+| Blocks | Assigned | Today |
+|---|---|---|
+| Ext A / basic / compatibility / Ext B | 80,776 | ✅ indexed |
+| Ext C·D·E·F·I / compatibility supplement / Ext G·H·J | 32,223 | ❌ **not indexed at all** |
+| Jurchen and Seal, new in Unicode 18.0 | 12,293 | ❌ **not indexed at all** |
+
+The failure is silent: a query for those characters returns "no match", indistinguishable from "this never existed".
+
+**That table is something we added.** The original implementation indexed `[a-z0-9_]` and nothing else, letting every other script fall back to a substring scan -- narrow, but nobody had to maintain it. Widening to non-Latin scripts meant copying a code-point table in, and now every Unicode release owes the project a manual reconciliation.
+
+The better repair is to stop owning the table and let the runtime answer: `\p{Script=Han}` covers Ext A through J in one go -- eight more blocks than the table, automatically -- and `\p{Extended_Pictographic}` can replace the symbol table. Measured on 92.5k characters: 1.0 ms → 1.6 ms. The catch is that existing rows keep the old index format until `/lcm doctor apply --reindex`.
+
+See [docs/limitations.md](docs/limitations.md).
+
 ## Configuration
 
 `config: {}` works. The three you are most likely to touch:

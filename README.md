@@ -33,6 +33,24 @@ plugin_manager { action: install_bundle, target: "openseek-lcm" }
 
 除 `node:sqlite` 外没有运行时依赖。
 
+## 索引的文字覆盖
+
+检索建立在 n-gram 索引上：拉丁取 3 字、CJK 取 2 字、符号取 1 字。**哪些码点算 CJK 是一张写死的范围表** —— 那是一份 Unicode 快照，会随时间过期：
+
+| 区块 | 已分配 | 现在 |
+|---|---|---|
+| Ext A / 基本区 / 兼容表意 / Ext B | 80,776 | ✅ 进索引 |
+| Ext C·D·E·F·I / 兼容补充 / Ext G·H·J | 32,223 | ❌ **完全不进** |
+| Unicode 18.0 的 Jurchen / Seal | 12,293 | ❌ **完全不进** |
+
+失效方式是静默的：查这些字只会得到"没有找到"，与"确实不存在"无法区分。
+
+**这张表是我们自己加的。** 原始实现只索引 `[a-z0-9_]`，其余文字一律退化成子串扫描 —— 覆盖窄，但不需要人维护。补非拉丁文字时我们抄了一份码点表进来，于是每发一版 Unicode 就欠一次手工对账。
+
+更根本的修法是不维护表，让运行时回答：`\p{Script=Han}` 一次覆盖 Ext A–J **全部**（比现在的表多 8 个区块），`\p{Extended_Pictographic}` 可以替掉符号表。实测 92.5k 字符的扫描耗时 1.0 ms → 1.6 ms。代价是改完必须 `/lcm doctor apply --reindex`，否则存量行留在旧索引格式里。
+
+详见 [docs/limitations.md](docs/limitations.md)。
+
 ## 配置
 
 `config: {}` 就能用。最常动的三个：
