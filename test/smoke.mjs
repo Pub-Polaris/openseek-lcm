@@ -25,7 +25,7 @@ import { renderSource, readSource, readBranchHeads, sourceRequestGuard, switchSo
 import { indexCanRepresentRun } from '../lib/text.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
-import { buildFtsQuery, explodeForIndex, gramsOf, hashContent, runsOf, unindexableRuns } from '../lib/text.js';
+import { buildFtsQuery, buildSnippet, explodeForIndex, gramsOf, hashContent, headTail, runsOf, truncate, unindexableRuns } from '../lib/text.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-smoke-'));
 let failures = 0;
@@ -2279,6 +2279,51 @@ await checkAsync('each branch row carries its own version and head', async () =>
     assert.equal(missing.version, '', 'and no version');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check('slicing never leaves half a surrogate', () => {
+  // Issue #10: a cut between the two halves of a surrogate pair leaves one half in
+  // the output. `JSON.stringify` then emits it as `\ud83e`, which is legal JSON but
+  // which the API rejects -- taking the whole request body down with it.
+  //
+  // Not emoji-specific: any character above U+FFFF is two UTF-16 code units, so
+  // PUA-Ext A/B hit exactly the same cut. BMP PUA (U+E000) does not -- it is one
+  // unit and three UTF-8 bytes, which is why byte length is not the axis here.
+  const lone = (text) => {
+    const found = [];
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = text.charCodeAt(index + 1);
+        if (!(next >= 0xdc00 && next <= 0xdfff)) found.push(`high@${index}`);
+      } else if (code >= 0xdc00 && code <= 0xdfff) {
+        const previous = text.charCodeAt(index - 1);
+        if (!(previous >= 0xd800 && previous <= 0xdbff)) found.push(`low@${index}`);
+      }
+    }
+    return found;
+  };
+
+  const samples = [
+    ['emoji', '\u{1f970}'],
+    ['PUA-Ext A', '\u{f0000}'],
+    ['PUA-Ext B', '\u{100000}'],
+    ['BMP PUA', '\u{e000}'],
+    ['CJK', '\u4e0a'],
+    ['latin', 'a'],
+  ];
+
+  for (const [name, character] of samples) {
+    for (let position = 0; position <= 24; position += 1) {
+      const text = `${'x'.repeat(position)}${character}${'y'.repeat(60)}`;
+      const where = `${name} pos=${position}`;
+      for (let limit = 1; limit <= 40; limit += 1) {
+        assert.deepEqual(lone(truncate(text, limit)), [], `truncate ${where} limit=${limit}`);
+        assert.deepEqual(lone(headTail(text, limit + 5)), [], `headTail ${where} limit=${limit + 5}`);
+        assert.deepEqual(lone(buildSnippet(text, 'y', limit)), [], `buildSnippet ${where} limit=${limit}`);
+      }
+    }
   }
 });
 
