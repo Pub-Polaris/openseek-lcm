@@ -2202,5 +2202,55 @@ await checkAsync('a redacted body is never stored as a file reference', async ()
   }
 });
 
+await checkAsync('--reindex rebuilds the index that counts cannot see', async () => {
+  // Counts match after a tokenizer change, so the automatic repair never runs; only
+  // an explicit rebuild replaces rows that were indexed the old way.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-reindex-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-reindex';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: {
+            id: 'reindex-u-1',
+            role: 'user',
+            content: [{ type: 'text', text: '该记录写作 ＡＢＣ１２３' }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+
+    // Simulate an index written by the old code: the same number of rows, indexed
+    // from the raw text, so every count still matches while the format is wrong.
+    local.db.exec('DELETE FROM message_fts');
+    local.run(
+      'INSERT INTO message_fts (session_id, message_id, role, created_at, content) VALUES (?, ?, ?, ?, ?)',
+      sessionId,
+      'reindex-u-1',
+      'user',
+      1000,
+      '该记录写作 ＡＢＣ１２３',
+    );
+    assert.equal(local.get('SELECT count(*) AS n FROM message_fts').n, 1);
+    assert.equal(local.grep({ query: 'abc123', sessionId, allowScan: false }).length, 0);
+
+    // A plain doctor sees matching counts and does nothing.
+    assert.equal(local.runDoctor({ apply: true }).includes('fts_rebuilt='), false);
+
+    // The explicit rebuild is what fixes it.
+    assert.match(local.runDoctor({ apply: true, reindex: true }), /fts_rebuilt=/);
+    assert.ok(local.grep({ query: 'abc123', sessionId, allowScan: false }).length > 0);
+  } finally {
+    local.close();
+  }
+});
+
 process.stdout.write(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);
 process.exit(failures === 0 ? 0 : 1);
