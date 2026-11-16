@@ -205,7 +205,7 @@ git commit ; git push origin dev
   | 兼容表意补充（U+2F800） | 542 | ❌ |
   | Ext G·H·J | 13,429 | ❌ |
 
-  `runsOf("𪜀")`（Ext C，U+2A700）返回 `[]` —— 连 run 都拿不到，所以**不报错、悄悄搜不到**。修法是往 `lib/text.js` 的 `CJK_SOURCE` 补范围：`20000-2FA1F`（B–I + 兼容补充）与 `30000-3347F`（G/H/J）。**改完存量归档必须 `/lcm doctor apply --reindex`**，否则老行仍是旧索引。用户 2026-11-17 决定"下次再改"，所以只记录、未修。
+  `runsOf("𪜀")`（Ext C，U+2A700）返回 `[]` —— 连 run 都拿不到，所以**不报错、悄悄搜不到**。修法是往 `lib/text.js` 的 `CJK_SOURCE` 补范围：`20000-2FA1F`（B–I + 兼容补充）与 `30000-3347F`（G/H/J）。**改完存量归档必须 `/lcm doctor apply --reindex`**，否则老行仍是旧索引。用户 2026-11-17 决定"下次再改"，所以只记录、未修。**TODO 与完整方案见 issue [#16](https://github.com/Pub-Polaris/openseek-lcm/issues/16)**（含脚本属性写法的实测数据、换表后的新耦合、以及"先装引信再换表"的顺序建议）。
 - **Unicode 18.0.0 新增的两个表意文字也没进索引**：Jurchen（U+18E00–U+191DF，965 字）、Seal（U+3D000–U+3FC3F，11,328 字）。本机 Node 24.22.1 是 **Unicode 17.0**（ICU 78.3），`\p{Script=Han}` 认不得它们 —— 所以这类比对**只能用官方 `Blocks.txt` / `UnicodeData.txt`**，别指望用本地 ICU 验证。比对用的数据在 `~\.dsh\backup\unicode\`（17.0.0 与 18.0.0 各一份 `Blocks.txt`，18.0.0 的 `UnicodeData.txt`）。
 
 ---
