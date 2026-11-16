@@ -21,7 +21,8 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive, readMeta } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
-import { renderSource, readSource, sourceRequestGuard, switchSource } from '../lib/source.js';
+import { renderSource, readSource, sourceRequestGuard, switchSource, checkInstallable, redactSpec } from '../lib/source.js';
+import { indexCanRepresentRun } from '../lib/text.js';
 import { LcmStore } from '../lib/store.js';
 import { buildTools } from '../lib/tools.js';
 import { buildFtsQuery, explodeForIndex, gramsOf, hashContent, runsOf, unindexableRuns } from '../lib/text.js';
@@ -1822,6 +1823,203 @@ await checkAsync('an index left empty by a failed upgrade is rebuilt on the next
   } finally {
     // The OS cleans the temp directory; closing a Windows handle and removing its
     // directory in the same breath races the file system.
+  }
+});
+
+await checkAsync('the index folds width, and single symbols are addressable', async () => {
+  // NFKC on both sides is what makes a query typed in another width reach the row,
+  // and a symbol must be its own token or a single emoji can never match.
+  assert.deepEqual(runsOf('ＡＢＣ１２３'), ['abc123'], 'full-width latin/digits fold to ascii');
+  assert.deepEqual(runsOf('完成 😀'), ['完成', '😀'], 'a symbol is its own run');
+  assert.equal(explodeForIndex('😀'), 'sym1f600', 'one symbol becomes an ASCII token, not a bigram half');
+  assert.equal(indexCanRepresentRun('😀'), true, 'a single symbol is representable');
+  assert.equal(indexCanRepresentRun('上'), false, 'a single Han character still needs a scan');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-fold-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    local.capture(
+      { ...header, id: 'session-smoke-folded' },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: {
+            id: 'folded-u-1',
+            role: 'user',
+            content: [{ type: 'text', text: '该记录写作 ＡＢＣ１２３ 并附一个 😀 标记' }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+    const wide = local.grep({ query: 'abc123', sessionId: 'session-smoke-folded', allowScan: false });
+    assert.ok(wide.length > 0, 'a full-width phrase is found by its ascii spelling');
+    const symbol = local.grep({ query: '😀', sessionId: 'session-smoke-folded', allowScan: false });
+    assert.ok(symbol.length > 0, 'a lone emoji is found through the index');
+  } finally {
+    local.close();
+  }
+});
+
+check('a credential is redacted before it reaches the archive', () => {
+  // The shared store is closed by the "store closes cleanly" check above, so this
+  // one owns a throwaway archive.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-redact-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const token = 'sk-liveTOKEN1234567890abcdef';
+    local.capture(
+      { ...header, id: 'session-smoke-redact' },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: {
+            id: 'redact-u-1',
+            role: 'user',
+            content: [{ type: 'text', text: `我的 key 是 ${token}，口令 password: hunter2hunter2` }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+    const row = local.get('SELECT text FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1', 'session-smoke-redact');
+    assert.ok(row && typeof row.text === 'string', 'the message was archived');
+    assert.equal(row.text.includes(token), false, 'the token itself must not be stored');
+    assert.ok(row.text.includes('[REDACTED]'), `the redaction is visible in place: ${JSON.stringify(row.text).slice(0, 200)}`);
+  } finally {
+    local.close();
+  }
+});
+
+check('the source payload never leaks a local path', () => {
+  assert.equal(redactSpec('link:C:/Users/rksk1/.dsh/x'), 'link:<local checkout>');
+  assert.equal(redactSpec('github:Pub-Polaris/openseek-lcm#dev'), 'github:Pub-Polaris/openseek-lcm#dev');
+  assert.equal(redactSpec(undefined), '');
+});
+
+await checkAsync('an unmerged branch head cannot be installed', async () => {
+  // The plugin runs with the user's privileges, so installing a commit that main
+  // has never seen is arbitrary code execution. `checkInstallable` is that gate.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-supply-'));
+  const bare = path.join(dir, 'remote.git');
+  const work = path.join(dir, 'work');
+  const git = (...args) => execFileSync('git', args, { cwd: work, stdio: 'pipe' }).toString();
+  try {
+    execFileSync('git', ['init', '--bare', bare], { stdio: 'pipe' });
+    execFileSync('git', ['clone', bare, work], { stdio: 'pipe' });
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+    fs.writeFileSync(path.join(work, 'a.txt'), 'a\n');
+    git('add', '.');
+    git('commit', '-m', 'merged work', '--quiet');
+    git('branch', '-M', 'main');
+    git('push', 'origin', 'main', '--quiet');
+
+    // A branch that main has never seen.
+    git('switch', '-c', 'polaris', '--quiet');
+    fs.writeFileSync(path.join(work, 'b.txt'), 'b\n');
+    git('add', '.');
+    git('commit', '-m', 'unmerged work', '--quiet');
+    git('push', 'origin', 'polaris', '--quiet');
+
+    const refused = await checkInstallable('polaris', { repoDir: work });
+    assert.equal(refused.ok, false, 'an unmerged head is refused');
+    assert.match(refused.reason, /not merged into origin\/main/);
+
+    const allowed = await checkInstallable('polaris', { repoDir: work, allowUnmerged: true });
+    assert.equal(allowed.ok, true, 'the escape hatch allows it');
+
+    // Merging it makes the same head installable without the hatch.
+    git('switch', 'main', '--quiet');
+    git('merge', '--no-ff', 'polaris', '-m', 'merge work', '--quiet');
+    git('push', 'origin', 'main', '--quiet');
+    const afterMerge = await checkInstallable('polaris', { repoDir: work });
+    assert.equal(afterMerge.ok, true, 'a merged head is installable');
+
+    // Rewriting the branch itself is refused even when everything else looks fine.
+    // (Rewriting `main` would not change this head, so it cannot be what is tested.)
+    git('switch', 'polaris', '--quiet');
+    git('reset', '--hard', 'HEAD~1', '--quiet');
+    git('commit', '--allow-empty', '-m', 'rewritten', '--quiet');
+    git('push', '--force', 'origin', 'polaris', '--quiet');
+    const rewritten = await checkInstallable('polaris', { repoDir: work, seen: { polaris: afterMerge.sha } });
+    assert.equal(rewritten.ok, false, 'a rewritten head is refused');
+    assert.match(rewritten.reason, /rewritten/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check('a zero grace period collects the batch it just stamped', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-grace-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const hash = 'smoke-zero-grace-blob';
+    local.run(
+      `INSERT INTO artifact_blobs (content_hash, content_text, char_count, created_at, orphaned_at)
+       VALUES (?, 'orphan body', 11, ?, NULL)`,
+      hash,
+      Date.now(),
+    );
+    assert.equal(local.get('SELECT orphaned_at FROM artifact_blobs WHERE content_hash = ?', hash).orphaned_at, null);
+    const report = local.gcBlobs({ apply: true, orphanBlobDays: 0, limit: 50 });
+    assert.match(report, /Deleted/);
+    assert.equal(local.get('SELECT 1 AS present FROM artifact_blobs WHERE content_hash = ?', hash), undefined);
+  } finally {
+    local.close();
+  }
+});
+
+await checkAsync('the doctor marks a session whose log is gone, and spans describe without text', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-deleted-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-vanished';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: {
+            id: 'vanished-u-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'a message in a session whose log will be gone' }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+
+    // `sessions.deleted` had no writer, so retention could never fire. The doctor's
+    // reconciliation is that writer: no log directory, no live session. The root has
+    // to exist -- an unreadable root says nothing about its sessions, so it must not
+    // mark anything.
+    const sessionsRoot = path.join(dir, 'sessions');
+    fs.mkdirSync(path.join(sessionsRoot, '--some-workspace--'), { recursive: true });
+    const report = local.runDoctor({ apply: true, sessionsRoot });
+    assert.match(report, /sessions_marked_deleted/);
+    assert.equal(local.get('SELECT deleted FROM sessions WHERE session_id = ?', sessionId).deleted, 1);
+
+    // Spans name the shape of a range without loading its text.
+    const spans = local.spans(sessionId, { chunks: 2 });
+    assert.ok(spans.length >= 1, 'at least one span');
+    for (const span of spans) {
+      assert.ok(Number.isFinite(span.fromSeq) && Number.isFinite(span.toSeq), 'spans carry a seq range');
+      assert.ok(span.sample.length <= 80, 'the sample is a preview, not the message');
+      assert.equal('text' in span, false, 'no full text is returned');
+    }
+  } finally {
+    local.close();
   }
 });
 

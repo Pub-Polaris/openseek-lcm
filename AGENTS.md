@@ -177,15 +177,20 @@ git commit ; git push origin dev
 
 ---
 
-## 已知未修问题
+## 已修问题（0.3.0）
 
-**只记录尚未修复的问题；已修复的不要写在这里（历史见 git log 与 PR）。**
+**0.3.0 一次清掉了此前列在这里的 5 条**，实现见对应测试：
 
-1. **字符类覆盖不全 → 静默搜不到。** 只有 `[a-z0-9_]`、假名、CJK 基本区、兼容表意文字与谚文音节参与索引与子串扫描；emoji、全角拉丁/数字（`ＡＢＣ`、`１２３`）、半角片假名、CJK 扩展 B、谚文字母既不建索引也不可扫。查询它们会得到"没有找到"，与"确实不存在"无法区分，且不报错。
-2. **活会话永不回收。** 只有**整会话**可被清理，且没有任何自动调度（compact / gc / retention 全靠手动调用）。归档会随使用单调增长。
-3. **`retention.deletedSessionDays` 永不触发。** `deletedSessionDays` 那条规则查 `sessions.deleted = 1`，而**没有任何代码写入这一列**（只有快照导入的 INSERT 会带上它，且 `ON CONFLICT` 分支并不更新它）。另一条 `staleSessionDays` 查的是 `pinned = 0 AND updated_at < cutoff`，与 `deleted` 无关，但**默认禁用**。因此文档里那套保留策略实际上不会因任何真实信号而生效。
-4. **`lib/text.js` 的 `sanitizeFtsTokens` 与 `FTS5_RESERVED` 是死代码。** 因为查询表达式只发出带引号的短语，二者永远不会被用到。
-5. **`orphanBlobDays: 0` 并不能"立刻回收本次才发现的那批孤儿"。** `gcBlobs` 在进入时就取好 cutoff，之后才给新观察到的孤儿打 `orphaned_at`，所以这一批要下一次调用才会被收。对"已经观察过一段时间的孤儿"宽限期语义是正确的，只有"本次第一次发现"的那一批会晚一轮。修法是把 cutoff 移到打戳之后，但那会改变现有测试的时序假设，故留作已知行为而非缺陷。
+1. **字符类覆盖 + 归一化。** 索引与查询两边都做 `NFKC`（`foldText`），全角/兼容字符折成 ASCII；新增半角片假名、谚文字母、CJK 扩展 B、emoji 与符号区。符号不能直接进 FTS —— `unicode61` 只认词字符，所以符号走 `sym<hex>` 的 ASCII 替身（`symbolTokens`），两侧共用。测试：`the index folds width, and single symbols are addressable`。
+2. **`retention.deletedSessionDays` 现在会触发。** 没有宿主删除事件可用，改用一条诚实的信号：日志目录不存在的会话由 `doctor` 标 `deleted = 1`（跳过 pinned；**sessions 根不存在时一律不标**，那说明"看不到"，不说明"没了"）。测试：`the doctor marks a session whose log is gone, and spans describe without text`。
+3. **归档会自我维护了。** `maintenance.autoEnabled`（**默认关闭**）下每 N 分钟跑 `blob_gc` + `compact` 的 prune/checkpoint；**永不自动 VACUUM**；有 capture 在飞时整轮跳过。它不会缩小活会话 —— 会话仍是保留的最小单位。
+4. **`sanitizeFtsTokens` / `FTS5_RESERVED` 已删。** 查询只发带引号的短语，二者从未被调用。
+5. **`orphanBlobDays: 0` 不再晚一轮。** 宽限期改成从**打戳那一刻**算，所以本次刚打戳的批次也在 cutoff 之内。测试：`a zero grace period collects the batch it just stamped`。
+
+## 未修（留作已知行为）
+
+- **归档体积仍然实打实**：45k 消息 → 300+ MiB。自动维护只回收死重量，真正变小要靠 `lcm_compact apply` 的 VACUUM（手动）。
+- **子串扫描不做归一化**：索引能把全角折成 ASCII 并命中，但 `allowScan` 的 LIKE 扫描比对的是原文，全角查询在那里仍可能漏。修它要给内容列存一份折叠副本，代价大于收益。
 
 ---
 

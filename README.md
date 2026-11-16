@@ -66,7 +66,7 @@ profile 里那一行的 spec 决定跑哪种代码：`link:<仓库>` 是本地�
 | | |
 |---|---|
 | [docs/config.md](docs/config.md) | 完整配置表 |
-| [docs/tools.md](docs/tools.md) | 18 个 `lcm_*` 工具 |
+| [docs/tools.md](docs/tools.md) | 19 个 `lcm_*` 工具 |
 | [docs/differences.md](docs/differences.md) | 与 opencode-lcm 的有意差异 |
 | [docs/mapping.md](docs/mapping.md) | OpenCode 扩展点 → Harness 的对等物 |
 | [docs/verification.md](docs/verification.md) | 三个套件、线上读数、清理顺序 |

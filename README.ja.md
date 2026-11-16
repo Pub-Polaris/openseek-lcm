@@ -66,7 +66,7 @@ plugin_manager { action: install_bundle, target: "openseek-lcm" }
 | | |
 |---|---|
 | [docs/config.md](docs/config.md) | 設定の全表 |
-| [docs/tools.md](docs/tools.md) | 18 個の `lcm_*` ツール |
+| [docs/tools.md](docs/tools.md) | 19 個の `lcm_*` ツール |
 | [docs/differences.md](docs/differences.md) | opencode-lcm との意図的な差分 |
 | [docs/mapping.md](docs/mapping.md) | OpenCode の拡張点 → Harness の相当物 |
 | [docs/verification.md](docs/verification.md) | 3 つのスイート、実測値、整理の順序 |
