@@ -18,7 +18,7 @@
 | `lcm_pin_session` / `lcm_unpin_session` | 保护某个会话不被保留策略清理。 |
 | `lcm_blob_stats` / `lcm_blob_gc` | 去重 blob 清单 / 孤儿回收。 |
 | `lcm_compact` | 剪枝内部事件、VACUUM，然后 checkpoint WAL。 |
-| `lcm_doctor` | 完整性检查；`apply: true` 时修复 FTS 与摘要状态。 |
+| `lcm_doctor` | 完整性检查；`apply: true` 时修复 FTS 与摘要状态。`reindex: true` **强制重建索引** —— 行数对得上、但索引是按旧格式写的时（升级换了分词/归一化）只有它能修。 |
 | `lcm_retention_report` / `lcm_retention_prune` | 预览 / 执行保留策略。 |
 | `lcm_export_snapshot` / `lcm_import_snapshot` | 可移植的 JSON 快照（`merge` 或 `replace`）。 |
 
