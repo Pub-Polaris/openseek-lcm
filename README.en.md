@@ -66,7 +66,7 @@ Two entry points: the settings page (**Plugins → openseek-lcm branches**, whic
 | | |
 |---|---|
 | [docs/config.md](docs/config.md) | Full configuration table |
-| [docs/tools.md](docs/tools.md) | The 18 `lcm_*` tools |
+| [docs/tools.md](docs/tools.md) | The 19 `lcm_*` tools |
 | [docs/differences.md](docs/differences.md) | Deliberate differences from opencode-lcm |
 | [docs/mapping.md](docs/mapping.md) | OpenCode extension points → their Harness equivalents |
 | [docs/verification.md](docs/verification.md) | The three suites, live readings, cleanup order |

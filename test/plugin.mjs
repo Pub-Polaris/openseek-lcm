@@ -217,11 +217,11 @@ check('every registration happens on the synchronous path', () => {
   assert.equal(ctx.host.effectWhileAwaiting, 0);
 });
 
-check('all 18 lcm tools are registered with usable schemas', () => {
-  assert.equal(ctx.host.tools.length, 18, `registered ${ctx.host.tools.length}`);
+check('all 19 lcm tools are registered with usable schemas', () => {
+  assert.equal(ctx.host.tools.length, 19, `registered ${ctx.host.tools.length}`);
   const names = ctx.host.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
-    'lcm_artifact', 'lcm_blob_gc', 'lcm_blob_stats', 'lcm_compact', 'lcm_describe', 'lcm_doctor',
+    'lcm_artifact', 'lcm_blob_gc', 'lcm_blob_stats', 'lcm_chunk', 'lcm_compact', 'lcm_describe', 'lcm_doctor',
     'lcm_expand', 'lcm_export_snapshot', 'lcm_grep', 'lcm_import_snapshot', 'lcm_lineage',
     'lcm_pin_session', 'lcm_resume', 'lcm_retention_prune', 'lcm_retention_report',
     'lcm_retrieval_debug', 'lcm_status', 'lcm_unpin_session',

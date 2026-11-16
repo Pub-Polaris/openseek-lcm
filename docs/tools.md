@@ -1,11 +1,12 @@
 # 工具面
 
-18 个 `lcm_*` 工具。会改数据的工具除非传 `apply: true`，否则只做 dry-run。
+19 个 `lcm_*` 工具。会改数据的工具除非传 `apply: true`，否则只做 dry-run。
 
-上游的 18 个工具全部提供，名称、参数与默认值一致。会改数据的工具除非传 `apply: true`，否则只做 dry-run。
+上游的 18 个工具全部提供，名称、参数与默认值一致；`lcm_chunk` 是本地新增的第 19 个。会改数据的工具除非传 `apply: true`，否则只做 dry-run。
 
 | 工具 | 用途 |
 |---|---|
+| `lcm_chunk` | 把一段 seq 区间切成 N 个 span 并只返回形状（范围、条数、字符量、一行预览），不返回正文；用来决定读哪段，或把 span 交给 `workflow`/subagent 并行。 |
 | `lcm_status` | 归档与配置清单。 |
 | `lcm_retrieval_debug` | **已弃用（Deprecated）**：上一次自动召回的诊断（分 scope、候选 vs 选中）。相似度召回默认关闭（`automaticRetrieval.enabled: false`），所以它通常只会答"还没跑过"；要看能挺过压缩的东西请用 `lcm_resume`。 |
 | `lcm_resume` | 某个会话的持久 resume note。 |

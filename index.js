@@ -35,15 +35,21 @@
  *    plugin, never the conversation.
  */
 
+import { join } from 'node:path';
+
 import { resolveConfig, resolveHomeDir } from './lib/config.js';
 import { buildLcmCommand } from './lib/commands.js';
 import { messageOfEvent } from './lib/messages.js';
 import { isInjectedMessage, planRecall, resolveStepAgent } from './lib/recall.js';
 import { LcmStore } from './lib/store.js';
 import {
+  checkInstallable,
   gitHubSpec,
   linkSpec,
+  readSeenHeads,
   readSource,
+  recordBranchHead,
+  redactSpec,
   sameGitHubSpec,
   sameLinkSpec,
   sourceRequestGuard,
@@ -510,6 +516,9 @@ export function apply(ctx, config) {
                 reply(403, { ok: false, reason: guard.reason });
                 return;
               }
+              // Branch heads this install has seen, so a force-push is visible
+              // rather than silently accepted.
+              const seenFile = join(resolved.storeDir, 'source-seen.json');
 
               // Optional access: a profile without the plugin manager still reports
               // the local checkout, it just cannot offer the GitHub install mode.
@@ -529,6 +538,10 @@ export function apply(ctx, config) {
 
               try {
                 if (request.method === 'POST') {
+                  if (resolved.source?.allowModeSwitch === false) {
+                    reply(403, { ok: false, reason: 'mode switching is disabled by configuration (source.allowModeSwitch)' });
+                    return;
+                  }
                   const body = (await readJsonBody(request)) ?? {};
                   const branch = String(body.branch ?? '');
                   const requested = String(body.mode ?? '');
@@ -539,16 +552,30 @@ export function apply(ctx, config) {
                     // already-installed spec has to be recognised here rather than
                     // handed to the manager and shown as a failure.
                     if (sameGitHubSpec(current, branch)) {
-                      reply(200, { ok: true, mode: 'github', branch, unchanged: true, spec: current });
+                      reply(200, { ok: true, mode: 'github', branch, unchanged: true, spec: redactSpec(current) });
                       return;
                     }
                     if (typeof manager?.installBundle !== 'function') {
                       reply(409, { ok: false, reason: 'the plugin manager is unavailable in this profile' });
                       return;
                     }
+                    // The plugin runs with the user's own privileges, so the commit
+                    // that gets installed decides what code runs next. Only a head
+                    // already merged into `main` is accepted unless the operator
+                    // opted into unmerged branches, and a rewritten head is refused
+                    // outright -- see checkInstallable.
+                    const usable = await checkInstallable(branch, {
+                      allowUnmerged: resolved.source?.allowUnmerged === true,
+                      seen: readSeenHeads(seenFile),
+                    });
+                    if (!usable.ok) {
+                      reply(409, { ok: false, reason: usable.reason, mode: 'github', branch });
+                      return;
+                    }
                     const change = await manager.installBundle(gitHubSpec(branch), { enabled: true });
                     const ok = change?.application !== 'failed' && change?.application !== 'cancelled';
-                    reply(ok ? 200 : 409, { ok, mode: 'github', branch, change });
+                    if (ok) recordBranchHead(branch, usable.sha, seenFile);
+                    reply(ok ? 200 : 409, { ok, mode: 'github', branch, sha: usable.sha, change });
                     return;
                   }
 
@@ -581,7 +608,9 @@ export function apply(ctx, config) {
                 const local = await readSource();
                 reply(200, {
                   ok: true,
-                  spec,
+                  // The absolute path of a link names the account and the checkout
+                  // layout; the page only needs to know it is a link.
+                  spec: redactSpec(spec),
                   version,
                   mode,
                   checkout: local.ok,
@@ -591,6 +620,8 @@ export function apply(ctx, config) {
                   reason: local.ok ? undefined : local.reason,
                   branches: SOURCE_BRANCHES,
                   modes: SOURCE_MODES,
+                  allowModeSwitch: resolved.source?.allowModeSwitch !== false,
+                  allowUnmerged: resolved.source?.allowUnmerged === true,
                 });
               } catch (error) {
                 reply(500, { ok: false, reason: String(error?.message ?? error) });

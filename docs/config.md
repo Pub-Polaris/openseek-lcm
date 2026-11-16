@@ -34,4 +34,7 @@
 | `retention.orphanBlobDays` | `14` | 无引用 blob 可被回收前的宽限期。 |
 | `privacy.excludeToolPrefixes` | `[]` | 不归档来自这些前缀工具的载荷。 |
 | `privacy.excludePathPatterns` | `[]` | 抑制/脱敏匹配的路径。 |
-| `privacy.redactPatterns` | `[]` | 在存储前做破坏性替换。 |
+| `privacy.redactPatterns` | `[]` | 在存储前做破坏性替换（额外补充，见下一行）。 |
+| `privacy.redactCredentials` | `true` | 额外套用内置的凭据形状（`sk-…`、`gh?__…`、JWT、`password: …`）。归档比会话活得久，落在里面的 token 会被再次召回，所以默认开。 |
+| `source.allowModeSwitch` | `true` | 设置页那条路由是否允许切换/重装。置 `false` 只能看。 |
+| `source.allowUnmerged` | `false` | 允许安装**未合并进 main** 的分支头。默认只认已合并的提交；打开等于接受供应链风险。 |
