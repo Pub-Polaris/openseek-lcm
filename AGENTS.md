@@ -187,6 +187,12 @@ git commit ; git push origin dev
 4. **`sanitizeFtsTokens` / `FTS5_RESERVED` 已删。** 查询只发带引号的短语，二者从未被调用。
 5. **`orphanBlobDays: 0` 不再晚一轮。** 宽限期改成从**打戳那一刻**算，所以本次刚打戳的批次也在 cutoff 之内。测试：`a zero grace period collects the batch it just stamped`。
 
+## 0.3.0 新增能力
+
+- **文件引用化 artifact。** 工具调用点名了 `path`、且文件仍在盘上大小未变时，归档只存**引用**（`content_text` 为空串 + `metadata.sourcePath`，不动表结构）；`lcm_artifact` 读时先读盘，读不到回 `stale-reference`。拿不到 path 就照常存正文。
+- **fork 继承按 scope。** 子会话在自己还没有消息时，`session` scope 自动向上包含父链（≤8 层）；捕获到自己的内容后继承消失。不复制任何行。
+- **`lcm_chunk`**（第 19 个工具）：把一段 seq 区间切成 N 个 span 只返回形状，并行交给 `workflow`/subagent。
+
 ## 未修（留作已知行为）
 
 - **归档体积仍然实打实**：45k 消息 → 300+ MiB。自动维护只回收死重量，真正变小要靠 `lcm_compact apply` 的 VACUUM（手动）。

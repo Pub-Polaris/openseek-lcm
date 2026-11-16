@@ -2023,5 +2023,108 @@ await checkAsync('the doctor marks a session whose log is gone, and spans descri
   }
 });
 
+await checkAsync('a fresh fork can search its parent by default', async () => {
+  // `session` is the default scope, so a fork that captured nothing of its own used
+  // to be able to find nothing at all -- even though its parent was right there.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-fork-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const parentId = 'session-smoke-fork-parent';
+    const childId = 'session-smoke-fork-child';
+    local.capture(
+      { ...header, id: parentId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: {
+            id: 'fork-u-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'the parent knew about 归档检索 and its limits' }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+    // Register the child without capturing anything: this is what a fork looks like
+    // before it says its first word.
+    local.upsertSession({ ...header, id: childId, parentSession: parentId, createdAt: Date.now() });
+
+    assert.deepEqual(local.resolveScope('session', childId), [childId, parentId]);
+    const hits = local.grep({ query: '归档检索', sessionId: childId, allowScan: false });
+    assert.ok(hits.length > 0, "the fork finds its parent's archive through the default scope");
+
+    // Once the child has content of its own, the inheritance steps out of the way.
+    local.capture(
+      { ...header, id: childId, parentSession: parentId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 2000,
+          data: {
+            id: 'fork-u-2',
+            role: 'user',
+            content: [{ type: 'text', text: 'the child has its own message now' }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+    assert.deepEqual(local.resolveScope('session', childId), [childId]);
+  } finally {
+    local.close();
+  }
+});
+
+await checkAsync('a file artifact is stored as a reference, and says so when it goes stale', async () => {
+  // A tool that read a file already left that file on disk; copying its body into the
+  // archive duplicates megabytes and the copy can only go stale.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-fileref-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  const file = path.join(dir, 'big.txt');
+  const bodyText = `HEADER-REFERENCED ${'x'.repeat(5000)}`;
+  fs.writeFileSync(file, bodyText);
+  try {
+    const sessionId = 'session-smoke-fileref';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'ref-u-1', role: 'user', content: [{ type: 'text', text: 'reading a file' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    local.insertArtifact(sessionId, 'ref-m-1', {
+      artifactId: 'ref-art-1',
+      blockIndex: 0,
+      kind: 'text',
+      fieldName: 'text',
+      preview: 'HEADER-REFERENCED',
+      content: bodyText,
+      metadata: { blockType: 'text', sourcePath: file },
+    });
+
+    const stored = local.get(
+      'SELECT b.content_text AS blob, b.char_count AS chars FROM artifacts a JOIN artifact_blobs b ON b.content_hash = a.content_hash WHERE a.artifact_id = ?',
+      'ref-art-1',
+    );
+    assert.equal(stored.blob, '', 'the body is not copied into the archive');
+    assert.equal(stored.chars, 0, 'and nothing is counted against the blob budget');
+    assert.match(local.artifact({ artifactId: 'ref-art-1', sessionId }), /HEADER-REFERENCED/);
+
+    fs.rmSync(file, { force: true });
+    assert.match(local.artifact({ artifactId: 'ref-art-1', sessionId }), /stale-reference/);
+  } finally {
+    local.close();
+  }
+});
+
 process.stdout.write(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);
 process.exit(failures === 0 ? 0 : 1);
