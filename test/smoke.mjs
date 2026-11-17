@@ -2363,6 +2363,7 @@ await checkAsync('/lcm quick answers the three post-compaction questions', async
     assert.match(result.text, /messages\s+\d+ archived/, 'inventory');
     assert.match(result.text, /this session/, 'this session');
     assert.match(result.text, /resume note/, 'resume note');
+    assert.match(result.text, /last messages/, 'the last thing said');
     assert.match(result.text, /\/lcm grep/, 'where to go next');
   } finally {
     local.close();
@@ -2390,6 +2391,49 @@ check('a maintenance preview never writes, and apply does', () => {
     assert.equal(local.get('SELECT 1 AS present FROM artifact_blobs WHERE content_hash = ?', hash), undefined);
 
     assert.match(runMaintenance(local, { action: 'nonsense' }), /Unknown maintenance action/);
+  } finally {
+    local.close();
+  }
+});
+
+check('the archive bounds its WAL instead of keeping the high-water mark', () => {
+  // A checkpoint resets the write position but leaves the file at its high-water
+  // mark, so one big rebuild left a 414 MB WAL beside a 392 MB database and every
+  // start paid to scan it. `journal_size_limit` is what makes it shrink.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-wal-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    assert.equal(local.get('PRAGMA journal_size_limit').journal_size_limit, 67108864);
+    assert.equal(local.get('PRAGMA journal_mode').journal_mode, 'wal');
+  } finally {
+    local.close();
+  }
+});
+
+check('recent messages come back oldest-first, newest last', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-recent-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-recent';
+    local.capture(
+      { ...header, id: sessionId },
+      [1, 2, 3].map((n) => ({
+        type: 'user/message',
+        seq: n - 1,
+        time: 1000 * n,
+        data: {
+          id: `recent-u-${n}`,
+          role: 'user',
+          content: [{ type: 'text', text: `message ${n}` }],
+          source: { kind: 'user' },
+        },
+      })),
+    );
+    const rows = local.recentMessages(sessionId, 3);
+    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.map((r) => r.text), ['message 1', 'message 2', 'message 3'], 'oldest first');
   } finally {
     local.close();
   }
