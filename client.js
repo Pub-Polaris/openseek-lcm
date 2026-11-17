@@ -32,6 +32,8 @@ window.__ModuleLoader__.load({
         localMode: 'Local checkout',
         githubMode: 'GitHub branch',
         localOnly: 'No local checkout here, so only the GitHub branch can be used.',
+        noRepo:
+          'No checkout to read: this is an npm install. Set source.repoDir to a clone to switch branches locally; GitHub installs still work.',
         applying: 'Applying…',
         installs: 'installs from',
         maint: 'Maintenance',
@@ -58,6 +60,7 @@ window.__ModuleLoader__.load({
         localMode: '本地仓库',
         githubMode: 'GitHub 分支',
         localOnly: '本机没有这个仓库的检出，只能用 GitHub 分支。',
+        noRepo: '读不到检出：这是 npm 安装的副本。把 source.repoDir 指向一个克隆才能本地切分支；GitHub 安装仍然可用。',
         applying: '正在应用…',
         installs: '来源',
         maint: '维护',
@@ -306,7 +309,7 @@ window.__ModuleLoader__.load({
             );
           }),
         ),
-        !checkout ? h('p', { style: STYLE.hint }, t('localOnly')) : null,
+        !checkout ? h('p', { style: STYLE.hint }, source.repoConfigured ? t('localOnly') : t('noRepo')) : null,
         h(
           'div',
           { style: STYLE.list },

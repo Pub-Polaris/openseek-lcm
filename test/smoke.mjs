@@ -21,7 +21,7 @@ import { resolveConfig, resolveHomeDir } from '../lib/config.js';
 import { SCHEMA_VERSION, openArchive, readMeta } from '../lib/db.js';
 import { isInjectedSourceKind } from '../lib/messages.js';
 import { compilePrivacy } from '../lib/privacy.js';
-import { renderSource, readSource, readBranchHeads, sourceRequestGuard, switchSource, checkInstallable, redactSpec, gitHubSpecAt, sameGitHubSpec } from '../lib/source.js';
+import { renderSource, readSource, readBranchHeads, sourceRequestGuard, switchSource, checkInstallable, redactSpec, gitHubSpecAt, sameGitHubSpec, looksLikeRepo } from '../lib/source.js';
 import { buildLcmCommand } from '../lib/commands.js';
 import { runMaintenance } from '../lib/maintenance.js';
 import { indexCanRepresentRun } from '../lib/text.js';
@@ -2436,6 +2436,34 @@ check('recent messages come back oldest-first, newest last', () => {
     assert.deepEqual(rows.map((r) => r.text), ['message 1', 'message 2', 'message 3'], 'oldest first');
   } finally {
     local.close();
+  }
+});
+
+await checkAsync('a directory without .git is reported, not mined for git errors', async () => {
+  // The plugin used to infer its checkout from its own install directory. An npm
+  // install has no `.git`, so every git call failed and the page showed raw git
+  // output as if it were a fact about the branch.
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-norepo-'));
+  try {
+    assert.equal(looksLikeRepo(empty), false);
+    assert.equal(looksLikeRepo(path.join(empty, 'missing')), false);
+    assert.equal(looksLikeRepo(undefined), false);
+
+    const installable = await checkInstallable('dev', { repoDir: empty });
+    assert.equal(installable.ok, false);
+    assert.match(installable.reason, /no-checkout/);
+    assert.match(installable.reason, /source\.repoDir/);
+
+    const source = await readSource(empty);
+    assert.equal(source.ok, false);
+    assert.match(source.reason, /not a git repository/);
+    assert.equal(source.reason.includes('fatal:'), false, 'no raw git output escapes');
+
+    const heads = await readBranchHeads(empty);
+    assert.equal(heads.length > 0, true, 'the branch list still renders');
+    assert.equal(heads.every((entry) => entry.sha === '' && entry.version === ''), true);
+  } finally {
+    fs.rmSync(empty, { recursive: true, force: true });
   }
 });
 

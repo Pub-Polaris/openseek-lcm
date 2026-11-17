@@ -522,6 +522,10 @@ export function apply(ctx, config) {
               // Branch heads this install has seen, so a force-push is visible
               // rather than silently accepted.
               const seenFile = join(resolved.storeDir, 'source-seen.json');
+              // A configured checkout wins; otherwise the helpers fall back to the
+              // module's own directory, which is a checkout only while the profile
+              // links the repository. An npm install is not one.
+              const repoDir = resolved.source?.repoDir || undefined;
 
               // Optional access: a profile without the plugin manager still reports
               // the local checkout, it just cannot offer the GitHub install mode.
@@ -563,6 +567,7 @@ export function apply(ctx, config) {
                     const usable = await checkInstallable(branch, {
                       allowUnmerged: resolved.source?.allowUnmerged === true,
                       seen: readSeenHeads(seenFile),
+                      repoDir,
                     });
                     if (!usable.ok) {
                       reply(409, { ok: false, reason: usable.reason, mode: 'github', branch });
@@ -595,15 +600,15 @@ export function apply(ctx, config) {
                   // Local mode: after a GitHub install the dependency no longer
                   // points at this checkout, so switching its branch would move a
                   // repository the profile is not running. Relink first.
-                  const local = await readSource();
+                  const local = await readSource(repoDir);
                   if (!sameLinkSpec(current) && local.ok && typeof manager?.installBundle === 'function') {
-                    const change = await manager.installBundle(linkSpec(), { enabled: true });
+                    const change = await manager.installBundle(linkSpec(repoDir), { enabled: true });
                     const ok = change?.application !== 'failed' && change?.application !== 'cancelled';
                     reply(ok ? 200 : 409, { ok, mode: 'local', branch, relinked: true, change });
                     return;
                   }
 
-                  const result = await switchSource(branch);
+                  const result = await switchSource(branch, repoDir);
                   reply(result.ok ? 200 : 409, { ...result, mode: 'local' });
                   return;
                 }
@@ -618,14 +623,14 @@ export function apply(ctx, config) {
                     : typeof spec === 'string'
                       ? 'local'
                       : 'unknown';
-                const local = await readSource();
+                const local = await readSource(repoDir);
                 // Each row names a branch, so each row should say what is on it:
                 // `${version}` from that branch's own manifest and the commit it
                 // points at. A dirty working tree marks the *current* branch only --
                 // it is a property of this checkout, not of the remote.
                 let heads;
                 try {
-                  heads = await readBranchHeads();
+                  heads = await readBranchHeads(repoDir);
                 } catch {
                   heads = SOURCE_BRANCHES;
                 }
@@ -646,6 +651,9 @@ export function apply(ctx, config) {
                     dirty:
                       local.ok && entry.name === local.branch && Array.isArray(local.dirty) && local.dirty.length > 0,
                   })),
+                  // Whether a checkout is configured at all: without one the page can
+                  // still install a branch, it just cannot verify or switch locally.
+                  repoConfigured: repoDir !== undefined,
                   modes: SOURCE_MODES,
                   allowModeSwitch: resolved.source?.allowModeSwitch !== false,
                   allowUnmerged: resolved.source?.allowUnmerged === true,
