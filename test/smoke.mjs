@@ -2583,5 +2583,51 @@ await checkAsync('characters newer than the runtime are counted, not guessed', a
   }
 });
 
+await checkAsync('doctor can actually repair a stale summary state', async () => {
+  // The restate used to bind one parameter for a statement with two placeholders, and
+  // node:sqlite fills the missing one with NULL instead of failing -- so the update
+  // matched no rows, `changes` stayed 0, and `summary_state_stale` was reported on
+  // every run and repaired on none.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-state-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-state';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'state-u-1', role: 'user', content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    // A deliberately wrong count, the shape a tombstone leaves behind.
+    local.run(
+      'INSERT INTO summary_state (session_id, archived_count, updated_at) VALUES (?, 999, ?) ON CONFLICT(session_id) DO UPDATE SET archived_count = 999',
+      sessionId,
+      Date.now(),
+    );
+    assert.match(local.runDoctor({ apply: false }), /summary_state_stale count=1/);
+
+    const applied = local.runDoctor({ apply: true });
+    assert.match(applied, /summary_state_restated=1/, 'the repair has to report a real change');
+    assert.equal(local.runDoctor({ apply: false }).includes('summary_state_stale'), false);
+  } finally {
+    local.close();
+  }
+});
+
+check('a session with no messages is reported without holding findings open', () => {
+  // There is no repair for a lost capture -- inventing a message would be worse than
+  // the gap -- so counting it as a finding would keep `findings` above zero forever.
+  // It is an informational line instead.
+  const source = fs.readFileSync(new URL('../lib/maintenance.js', import.meta.url), 'utf8');
+  assert.equal(/findings\.push\(`session_without_messages/.test(source), false, 'no longer a finding');
+  assert.equal(/sessions_without_messages=\$\{sessionsWithoutMessages\}/.test(source), true, 'still reported');
+});
+
 process.stdout.write(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);
 process.exit(failures === 0 ? 0 : 1);
