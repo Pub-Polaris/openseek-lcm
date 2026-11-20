@@ -35,19 +35,30 @@ No runtime dependency except `node:sqlite`.
 
 ## Which characters the index covers
 
-Retrieval runs on an n-gram index: three characters for Latin, two for CJK, one for a symbol. **Which code points count as CJK is a hardcoded range table**, and that table is a Unicode snapshot -- it decays:
+Retrieval runs on an n-gram index where **width is the only policy**: three characters for ASCII words, two for every other letter and number, one for a symbol.
 
-| Blocks | Assigned | Today |
-|---|---|---|
-| Ext A / basic / compatibility / Ext B | 80,776 | ✅ indexed |
-| Ext C·D·E·F·I / compatibility supplement / Ext G·H·J | 32,223 | ❌ **not indexed at all** |
-| Jurchen and Seal, new in Unicode 18.0 | 12,293 | ❌ **not indexed at all** |
+**There is no code-point table.** Which characters belong to which class is answered by the runtime's Unicode properties (`\p{L}`, `\p{N}`, `\p{M}`, `\p{Extended_Pictographic}`), which follow the ICU version shipped with Node. A new Han extension, or a script nobody has heard of yet, needs no change here.
 
-The failure is silent: a query for those characters returns "no match", indistinguishable from "this never existed".
+That buys three things:
 
-**That table is something we added.** The original implementation indexed `[a-z0-9_]` and nothing else, letting every other script fall back to a substring scan -- narrow, but nobody had to maintain it. Widening to non-Latin scripts meant copying a code-point table in, and now every Unicode release owes the project a manual reconciliation.
+| | |
+|---|---|
+| Han Ext C–J, the compatibility supplement, Ext G/H/J | indexed (32,223 assigned characters used to be **unfindable**) |
+| Greek and Cyrillic | indexed (they matched no class and were dropped wholesale) |
+| New scripts (Jurchen, Seal, …) | indexed as soon as the runtime knows them |
 
-The better repair is to stop owning the table and let the runtime answer: `\p{Script=Han}` covers Ext A through J in one go -- eight more blocks than the table, automatically -- and `\p{Extended_Pictographic}` can replace the symbol table. Measured on 92.5k characters: 1.0 ms → 1.6 ms. The catch is that existing rows keep the old index format until `/lcm doctor apply --reindex`.
+The cost: **rebuild the index once after upgrading** (`/lcm doctor apply --reindex`), or existing rows keep the old format.
+
+### Two fuses for silent failures
+
+When the index goes wrong there is no error and no count changes -- only "no match". So `lcm_doctor` samples two comparisons:
+
+| Metric | Meaning |
+|---|---|
+| `index_shape_drift rows=<n> sampled=<k>` | stored index content ≠ what the current rules produce -- either a writer bypassed `explodeForIndex` (`unicode61` sees a whole Chinese run as one token), or the rules changed while old rows stayed |
+| `index_unknown_characters text=<n> sampled=<k>` | the text contains code points **this ICU does not define** (`\p{Cn}`) -- it is newer than the runtime |
+
+Both are sampled (200 / 2000 rows). A full comparison measured 27 s; sampling measures 12 ms -- the same check, 2000× cheaper.
 
 See [docs/limitations.md](docs/limitations.md).
 

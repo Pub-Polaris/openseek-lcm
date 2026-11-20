@@ -2204,9 +2204,11 @@ await checkAsync('a redacted body is never stored as a file reference', async ()
   }
 });
 
-await checkAsync('--reindex rebuilds the index that counts cannot see', async () => {
-  // Counts match after a tokenizer change, so the automatic repair never runs; only
-  // an explicit rebuild replaces rows that were indexed the old way.
+await checkAsync('a plain doctor sees a raw-text index row that counts cannot', async () => {
+  // The old check compared counts, so a row indexed from raw text was invisible: the
+  // count matched, `MATCH` returned nothing, and nothing anywhere said so. Shape
+  // sampling is what closes that hole -- and it is also what notices an upgrade that
+  // changed the indexing rules while every old row stayed indexed the old way.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-reindex-'));
   const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
   local.init();
@@ -2243,12 +2245,44 @@ await checkAsync('--reindex rebuilds the index that counts cannot see', async ()
     assert.equal(local.get('SELECT count(*) AS n FROM message_fts').n, 1);
     assert.equal(local.grep({ query: 'abc123', sessionId, allowScan: false }).length, 0);
 
-    // A plain doctor sees matching counts and does nothing.
-    assert.equal(local.runDoctor({ apply: true }).includes('fts_rebuilt='), false);
+    // A dry run reports it and changes nothing.
+    const preview = local.runDoctor({ apply: false });
+    assert.match(preview, /index_shape_drift rows=1 /);
+    assert.equal(local.get('SELECT content FROM message_fts LIMIT 1').content, '该记录写作 ＡＢＣ１２３');
 
-    // The explicit rebuild is what fixes it.
-    assert.match(local.runDoctor({ apply: true, reindex: true }), /fts_rebuilt=/);
+    // apply repairs it, and the folded query starts working.
+    assert.match(local.runDoctor({ apply: true }), /index_shape_drift rows=1 /);
+    assert.equal(local.runDoctor({ apply: false }).includes('index_shape_drift rows=0 '), true);
     assert.ok(local.grep({ query: 'abc123', sessionId, allowScan: false }).length > 0);
+  } finally {
+    local.close();
+  }
+});
+
+await checkAsync('--reindex still forces a rebuild nothing else would', async () => {
+  // The explicit switch has to keep working on an archive that looks perfectly
+  // healthy: that is the only way to replace rows after the *rules* changed.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-force-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-force';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'force-u-1', role: 'user', content: [{ type: 'text', text: '上下文记忆' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    // Clean archive: nothing to repair, so a plain doctor does nothing.
+    assert.equal(local.runDoctor({ apply: true }).includes('fts_rebuilt='), false);
+    assert.match(local.runDoctor({ apply: true, reindex: true }), /fts_rebuilt=/);
+    // And a dry run says so rather than silently doing nothing.
+    assert.match(local.runDoctor({ apply: false, reindex: true }), /reindex=requested/);
   } finally {
     local.close();
   }
@@ -2464,6 +2498,88 @@ await checkAsync('a directory without .git is reported, not mined for git errors
     assert.equal(heads.every((entry) => entry.sha === '' && entry.version === ''), true);
   } finally {
     fs.rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+check('the index classes follow the runtime, not a table', () => {
+  // The old table stopped at CJK Extension B, so 32,223 assigned Han characters
+  // never became a run at all; Greek and Cyrillic prose matched no class and was
+  // dropped wholesale. Both are decided by the runtime now.
+  for (const cp of [0x2a700, 0x2b820, 0x30000, 0x323b0]) {
+    const character = String.fromCodePoint(cp);
+    assert.ok(runsOf(character).length > 0, `U+${cp.toString(16)} must produce a run`);
+    assert.ok(explodeForIndex(character).length > 0, `U+${cp.toString(16)} must be indexed`);
+  }
+  assert.deepEqual(runsOf('Привет'), ['привет'], 'Cyrillic is indexed as a wide run');
+  assert.deepEqual(runsOf('Ελληνικά'), ['ελληνικά'], 'Greek is indexed as a wide run');
+  // A wide run may continue into ASCII, which is what makes a mixed phrase work.
+  assert.deepEqual(runsOf('第3章'), ['第3章']);
+  // Private use is not a letter: font icons stay out of the index on purpose.
+  assert.deepEqual(runsOf('\uE000'), []);
+  // Symbols keep their ASCII stand-in, because `unicode61` would drop them.
+  assert.equal(explodeForIndex('😀'), 'sym1f600');
+});
+
+await checkAsync('the doctor samples rather than scans, and says how many it read', async () => {
+  // The honest check is a full comparison; the affordable one is a sample. The
+  // reported `sampled=` is what proves it stayed a sample.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-sampled-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-sampled';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: { id: 'sampled-u-1', role: 'user', content: [{ type: 'text', text: '抽样上限' }], source: { kind: 'user' } },
+        },
+      ],
+    );
+    const report = local.runDoctor({ apply: false });
+    const shape = report.match(/index_shape_drift rows=\d+ sampled=(\d+)/);
+    const text = report.match(/index_unknown_characters text=\d+ sampled=(\d+)/);
+    assert.ok(shape, 'the shape detector reports a sample size');
+    assert.ok(text, 'the coverage detector reports a sample size');
+    assert.ok(Number(shape[1]) <= 200, `shape sample ${shape[1]} must stay <= 200`);
+    assert.ok(Number(text[1]) <= 2000, `text sample ${text[1]} must stay <= 2000`);
+  } finally {
+    local.close();
+  }
+});
+
+await checkAsync('characters newer than the runtime are counted, not guessed', async () => {
+  // Anything this ICU can classify is indexed now, so the only text that can still
+  // fall through is text newer than the runtime's Unicode data -- `\p{Cn}`.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lcm-unknown-'));
+  const local = new LcmStore({ config: resolveConfig({ storeDir: dir }, { homeDir: dir }), logger });
+  local.init();
+  try {
+    const sessionId = 'session-smoke-unknown';
+    local.capture(
+      { ...header, id: sessionId },
+      [
+        {
+          type: 'user/message',
+          seq: 0,
+          time: 1000,
+          data: {
+            id: 'unknown-u-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'ahead of the runtime: \u{3BD61} and 汉字' }],
+            source: { kind: 'user' },
+          },
+        },
+      ],
+    );
+    const report = local.runDoctor({ apply: false });
+    assert.match(report, /index_unknown_characters text=[1-9]\d*/, 'an unassigned code point is counted');
+    assert.match(report, /index_unknown_characters text=\d+ sampled=\d+/, 'and the sample size is reported');
+  } finally {
+    local.close();
   }
 });
 

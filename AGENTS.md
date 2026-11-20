@@ -196,17 +196,13 @@ git commit ; git push origin dev
 
 - **归档体积仍然实打实**：45k 消息 → 300+ MiB。回收死重量靠手动 `lcm_blob_gc` + `lcm_compact apply`（VACUUM）。
 - **子串扫描不做归一化**：索引能把全角折成 ASCII 并命中，但 `allowScan` 的 LIKE 扫描比对的是原文，全角查询在那里仍可能漏。修它要给内容列存一份折叠副本，代价大于收益。
-- **`CJK_SOURCE` 只覆盖到 Ext B，32,223 个已分配汉字完全搜不到。** 实测（Unicode 18.0.0 的 `UnicodeData.txt`，2026-07-08）：
-
-  | 区块 | 已分配 | 覆盖 |
-  |---|---|---|
-  | Ext A / 基本区 / 兼容表意 / Ext B | 80,776 | ✅ |
-  | Ext C·D·E·F·I | 22,252 | ❌ |
-  | 兼容表意补充（U+2F800） | 542 | ❌ |
-  | Ext G·H·J | 13,429 | ❌ |
-
-  `runsOf("𪜀")`（Ext C，U+2A700）返回 `[]` —— 连 run 都拿不到，所以**不报错、悄悄搜不到**。修法是往 `lib/text.js` 的 `CJK_SOURCE` 补范围：`20000-2FA1F`（B–I + 兼容补充）与 `30000-3347F`（G/H/J）。**改完存量归档必须 `/lcm doctor apply --reindex`**，否则老行仍是旧索引。用户 2026-11-17 决定"下次再改"，所以只记录、未修。**TODO 与完整方案见 issue [#16](https://github.com/Pub-Polaris/openseek-lcm/issues/16)**（含脚本属性写法的实测数据、换表后的新耦合、以及"先装引信再换表"的顺序建议）。
-- **Unicode 18.0.0 新增的两个表意文字也没进索引**：Jurchen（U+18E00–U+191DF，965 字）、Seal（U+3D000–U+3FC3F，11,328 字）。本机 Node 24.22.1 是 **Unicode 17.0**（ICU 78.3），`\p{Script=Han}` 认不得它们 —— 所以这类比对**只能用官方 `Blocks.txt` / `UnicodeData.txt`**，别指望用本地 ICU 验证。比对用的数据在 `~\.dsh\backup\unicode\`（17.0.0 与 18.0.0 各一份 `Blocks.txt`，18.0.0 的 `UnicodeData.txt`）。
+- **索引不再维护码点表（0.3.6 起）。** 宽度是政策（ASCII 3 字 / 其他字母数字 2 字 / 符号 1 字），**哪些码点属于哪一类由 ICU 回答**（`\p{L}` `\p{N}` `\p{M}` `\p{Extended_Pictographic}`）。此前那张表停在 Ext B，32,223 个已分配汉字、以及希腊/西里尔文全都搜不到。
+  - 副作用一：宽类会吸收 ASCII（`第3章` 是一个 run），所以 `WIDE_RUN` 不能直接拿去做查询扫描，要用 `WIDE_SCAN`（带非 ASCII 起点断言）。
+  - 副作用二：**升级后必须 `/lcm doctor apply --reindex`**，否则老行还是旧规则写的。
+  - 覆盖上限是运行时的 Unicode（本机 Node 24.22.1 = Unicode 17.0 / ICU 78.3）：比它新的字符无法被索引，由 `index_unknown_characters` 报出来。
+- **两个静默失败检测器在 `lcm_doctor` 里（0.3.6 起）**：`index_shape_drift`（FTS 内容 ≠ `explodeForIndex(text)`，即写入路径绕过展开、或规则变更后未重建）和 `index_unknown_characters`（正文里有 `\p{Cn}`）。
+  - 实现必须**抽样**：按 FTS 的 UNINDEXED `message_id` 做 join 会全表扫，实测 **27 秒**；改成从 `message_fts_content` 按 `id` 取样 + `messages` 主键回查，**12 毫秒**。别把它改回 join。
+  - 计数一致**不代表**索引可用 —— 这正是这两个检测器存在的理由。
 
 ---
 
